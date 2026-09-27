@@ -1,6 +1,6 @@
 {
   "name": "omo-jev-plugin",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "Configurable Jev decision layer for OmO and senpi",
   "type": "module",
   "main": "./dist/index.js",
@@ -17,13 +17,13 @@
     "node": ">=20"
   },
   "pi": {
-    "extensions": ["./dist/index.js"]
+    "extensions": ["./index.js"]
   },
   "publishConfig": {
     "registry": "https://registry.npmjs.org/",
     "access": "public"
   },
-  "files": ["dist", "README.md", "LICENSE", "jev-plugin.example.jsonc"],
+  "files": ["index.js", "dist", "README.md", "LICENSE", "jev-plugin.example.jsonc"],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "check": "tsc --noEmit -p tsconfig.json",

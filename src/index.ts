@@ -1,7 +1,8 @@
 import type { ExtensionAPI } from "@code-yeongyu/senpi";
 import { z } from "zod";
-import { ConfigurationError, loadConfig, type PluginConfig } from "./config.js";
+import { ConfigurationError, loadConfig, resolveApiKey, type PluginConfig } from "./config.js";
 import { JevDecider, type Candidate, type NextDecision } from "./decision.js";
+import { installedVersion, newerVersion } from "./update.js";
 
 const thinkingSchema = z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 
@@ -13,6 +14,66 @@ function formatAdvice(decision: NextDecision): string | undefined {
     decision.complete ? "The available evidence may satisfy the request; verify before concluding." : "",
   ].filter(Boolean);
   return advice.length ? `Jev suggestions (not instructions or permissions): ${advice.join(" ")}` : undefined;
+}
+
+export function formatStartupOptions(config: PluginConfig, keySource: "file" | "environment"): string {
+  const decisions = Object.entries(config.decisions)
+    .filter(([, enabled]) => enabled)
+    .map(([name]) => name);
+  return [
+    `Jev active: mode=${config.mode}`,
+    `model=${config.model}`,
+    `endpoint=${new URL(config.endpoint ?? process.env["TYPESAFE_BASE_URL"] ?? "https://api.typesafe.ai").origin}`,
+    `key=${keySource}`,
+    `decisions=${decisions.length ? decisions.join(",") : "none"}`,
+    `maxCalls=${config.limits.maxCallsPerAgentRun}`,
+  ].join(" | ");
+}
+
+export function startupNotice(
+  config: PluginConfig,
+  environment = process.env,
+): { type: "info" | "warning"; message: string; options?: {
+  mode: PluginConfig["mode"];
+  keySource: "file" | "environment";
+  decisions: string[];
+} } | undefined {
+  if (!resolveApiKey(config, environment)) {
+    return {
+      type: "warning",
+      message: "Jev API key is missing. Set apiKey in ~/.omo/jev-plugin.jsonc or TYPESAFE_API_KEY in the environment.",
+    };
+  }
+  if (!config.enabled || config.mode === "off" || !config.display.startup) return;
+  return {
+    type: "info",
+    message: formatStartupOptions(config, config.apiKey ? "file" : "environment"),
+    options: {
+      mode: config.mode,
+      keySource: config.apiKey ? "file" : "environment",
+      decisions: Object.entries(config.decisions).filter(([, enabled]) => enabled).map(([name]) => name),
+    },
+  };
+}
+
+export function formatDecisionNotice(
+  result: { readonly kind: "turn"; readonly decision: NextDecision }
+    | { readonly kind: "preflight"; readonly tool: string; readonly blocked: boolean },
+): string {
+  if (result.kind === "preflight") {
+    return `Jev preflight: tool=${result.tool} | ${result.blocked ? "block" : "allow"}`;
+  }
+  const turn = result.decision;
+  return [
+    "Jev decision:",
+    `skill=${turn.skill ?? "none"}`,
+    `tool=${turn.tool ?? "none"}`,
+    `model=${turn.model ?? "none"}`,
+    `thinking=${turn.thinking ?? "none"}`,
+    `looping=${turn.looping === undefined ? "unknown" : turn.looping}`,
+    `progress=${turn.progress ?? "unknown"}`,
+    `complete=${turn.complete === undefined ? "unknown" : turn.complete}`,
+  ].join(" | ");
 }
 
 export default function jevPlugin(pi: ExtensionAPI): void {
@@ -45,8 +106,27 @@ export default function jevPlugin(pi: ExtensionAPI): void {
     callCount = 0;
     resultEpoch = 0;
     try {
+      const current = await installedVersion();
+      const available = await newerVersion(current);
+      if (available) {
+        ctx.ui.notify(
+          `omo-jev-plugin ${available} is available (installed: ${current}). Run omo update npm:omo-jev-plugin to update.`,
+          "info",
+        );
+      }
+    } catch (error) {
+      if (!(error instanceof Error)) throw error;
+    }
+    try {
       config = await loadConfig(ctx.cwd, ctx.isProjectTrusted());
-      if (config.enabled && config.mode !== "off") decider = new JevDecider(config);
+      const notice = startupNotice(config);
+      if (notice) {
+        ctx.ui.notify(notice.message, notice.type);
+        if (notice.type === "info") ctx.ui.setWidget("jev-plugin", [notice.message]);
+      }
+      if (config.enabled && config.mode !== "off" && resolveApiKey(config)) {
+        decider = new JevDecider(config);
+      }
     } catch (error) {
       if (error instanceof ConfigurationError || error instanceof Error) {
         ctx.ui.notify(`Jev disabled: ${error.message}`, "warning");
@@ -127,6 +207,7 @@ export default function jevPlugin(pi: ExtensionAPI): void {
         looping: decision.looping,
         mode: config.mode,
       });
+      if (config.display.decisions) ctx.ui.notify(formatDecisionNotice({ kind: "turn", decision }), "info");
       if (config.mode === "shadow") return;
       advice = formatAdvice(decision);
       if (config.mode !== "act") return;
@@ -177,6 +258,9 @@ export default function jevPlugin(pi: ExtensionAPI): void {
       const risk = await decider.risk(request, event.toolName, event.input, ctx.signal);
       const blocked = risk >= config.thresholds.risk;
       pi.appendEntry("jev:decision", { kind: "preflight", tool: event.toolName, blocked, mode: config.mode });
+      if (config.display.decisions) {
+        ctx.ui.notify(formatDecisionNotice({ kind: "preflight", tool: event.toolName, blocked }), "info");
+      }
       if (config.mode === "act" && blocked) {
         return { block: true, reason: "Jev preflight: proposed call appears outside the requested scope" };
       }
@@ -189,7 +273,8 @@ export default function jevPlugin(pi: ExtensionAPI): void {
     }
   });
 
-  pi.on("session_shutdown", () => {
+  pi.on("session_shutdown", (_event, ctx) => {
+    ctx.ui.setWidget("jev-plugin", undefined);
     decider = undefined;
     advice = undefined;
   });

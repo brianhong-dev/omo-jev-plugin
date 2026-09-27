@@ -19,6 +19,7 @@ function config(): PluginConfig {
     model: "jev-1.13.0",
     models: [],
     activatableTools: [],
+    display: { startup: true, decisions: false },
     decisions: {
       skills: false, nextAction: true, toolDiscovery: false, toolActivation: false,
       toolPreflight: false, resultAssessment: false, loopDetection: false,
@@ -64,6 +65,40 @@ test("recommends a registered tool when its absolute fit is high", async () => {
     const result = await new JevDecider(config(), client).next(state);
     // Then the known tool is recommended.
     expect(result.tool).toBe("read");
+  } finally {
+    server.stop(true);
+  }
+});
+
+test("sends the configured key to the configured endpoint", async () => {
+  // Given a local Jev endpoint and a key supplied by the plugin config.
+  const received: string[] = [];
+  const server = Bun.serve({
+    port: 0,
+    async fetch(req) {
+      received.push(req.headers.get("authorization") ?? "");
+      return Response.json({
+        model: "jev-1.13.0",
+        answers: {
+          tool: {
+            type: "choice", choice: "read", confidence: 0.9,
+            probabilities: { read: 0.95, __none__: 0.05 },
+          },
+          toolFits: { type: "noul", noul: 0.9 },
+        },
+        usage: { input_tokens: 5, output_tokens: 2 },
+      });
+    },
+  });
+  const configured = config();
+  configured.apiKey = "configured-key";
+  configured.endpoint = `http://127.0.0.1:${server.port}`;
+  try {
+    // When the production client makes a decision.
+    const result = await new JevDecider(configured).next(state);
+    // Then the request reached that endpoint with the configured key.
+    expect(result.tool).toBe("read");
+    expect(received).toEqual(["Bearer configured-key"]);
   } finally {
     server.stop(true);
   }

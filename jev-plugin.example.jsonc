@@ -4,6 +4,13 @@
   "enabled": true,
   "mode": "advise",
   "model": "jev-1.13.0",
+  "display": {
+    "startup": true,
+    "decisions": false
+  },
+  // Optional. File apiKey takes precedence over TYPESAFE_API_KEY.
+  // "apiKey": "your-typesafe-key",
+  // "endpoint": "https://api.typesafe.ai",
   "decisions": {
     "skills": true,
     "nextAction": true,

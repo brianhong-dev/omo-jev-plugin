@@ -1,6 +1,6 @@
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { parse, printParseErrorCode, type ParseError } from "jsonc-parser";
 import { z } from "zod";
 
@@ -30,13 +30,21 @@ const partialDecisionsSchema = z.strictObject({
   thinkingLevel: z.boolean().optional(),
 });
 
+const displaySchema = z.strictObject({
+  startup: z.boolean().default(true),
+  decisions: z.boolean().default(false),
+});
+
 const configSchema = z.strictObject({
   enabled: z.boolean().default(true),
   mode: z.enum(["off", "shadow", "advise", "act"]).default("off"),
   model: z.string().min(1).default("jev-1.13.0"),
+  endpoint: z.url().optional(),
+  apiKey: z.string().trim().min(1).optional(),
   models: z.array(z.string().min(1)).max(16).default([]),
   activatableTools: z.array(z.string().min(1)).max(254).default([]),
   decisions: decisionsSchema.prefault({}),
+  display: displaySchema.prefault({}),
   limits: z.strictObject({
     timeoutMs: z.number().int().min(100).max(30_000).default(1_000),
     maxCallsPerAgentRun: z.number().int().min(1).max(1_000).default(30),
@@ -53,6 +61,10 @@ const configSchema = z.strictObject({
 
 type ConfigInput = z.input<typeof configSchema>;
 export type PluginConfig = z.output<typeof configSchema>;
+
+export function resolveApiKey(config: PluginConfig, environment = process.env): string | undefined {
+  return config.apiKey ?? (environment["TYPESAFE_API_KEY"]?.trim() || undefined);
+}
 
 export class ConfigurationError extends Error {
   constructor(readonly path: string, message: string) {
@@ -80,9 +92,15 @@ async function readConfig(path: string): Promise<ConfigInput | undefined> {
     enabled: z.boolean().optional(),
     mode: z.enum(["off", "shadow", "advise", "act"]).optional(),
     model: z.string().min(1).optional(),
+    endpoint: z.url().optional(),
+    apiKey: z.string().trim().min(1).optional(),
     models: z.array(z.string().min(1)).optional(),
     activatableTools: z.array(z.string().min(1)).optional(),
     decisions: partialDecisionsSchema.optional(),
+    display: z.strictObject({
+      startup: z.boolean().optional(),
+      decisions: z.boolean().optional(),
+    }).optional(),
     limits: z.strictObject({
       timeoutMs: z.number().int().min(100).max(30_000).optional(),
       maxCallsPerAgentRun: z.number().int().min(1).max(1_000).optional(),
@@ -105,12 +123,26 @@ export async function loadConfig(
   trusted: boolean,
   globalPath = globalConfigPath(),
 ): Promise<PluginConfig> {
-  const global = await readConfig(globalPath);
+  let global = await readConfig(globalPath);
+  if (!global) {
+    await mkdir(dirname(globalPath), { recursive: true });
+    try {
+      await writeFile(globalPath, `${JSON.stringify(configSchema.parse({}), null, 2)}\n`, {
+        encoding: "utf8",
+        flag: "wx",
+        mode: 0o600,
+      });
+    } catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error;
+    }
+    global = await readConfig(globalPath);
+  }
   const local = trusted ? await readConfig(projectConfigPath(cwd)) : undefined;
   return configSchema.parse({
     ...global,
     ...local,
     decisions: { ...global?.decisions, ...local?.decisions },
+    display: { ...global?.display, ...local?.display },
     limits: { ...global?.limits, ...local?.limits },
     thresholds: { ...global?.thresholds, ...local?.thresholds },
   });
