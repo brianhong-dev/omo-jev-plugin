@@ -14,10 +14,10 @@ bun run build
 npm pack --dry-run
 ```
 
-The `pi.extensions` manifest entry points to `dist/index.js`. The `prepack` script rebuilds `dist/` before `npm pack` or `npm publish`; generated files are not committed. To load the checkout directly in senpi after building:
+The `pi.extensions` manifest entry points to the root `index.js` shim, which re-exports `dist/index.js` so the installed extension identity does not include `dist`. The `prepack` script rebuilds `dist/` before `npm pack` or `npm publish`; generated files are not committed. To load the checkout directly in senpi after building:
 
 ```sh
-senpi -e ./dist/index.js
+senpi -e ./index.js
 ```
 
 Keep the API boundary in mind when changing behavior: `turn_start` evaluates the current task, `context` provides advice on the next model call, and `tool_call` can block but cannot replace an already selected call. The plugin must not grant permissions on Jev's behalf. The default config remains `off`; network tests should use a local HTTP server instead of a live API key.
@@ -27,8 +27,8 @@ Keep the API boundary in mind when changing behavior: `turn_start` evaluates the
 The package is published to npmjs. The initial `0.0.1` version was published manually; do not push a `v0.0.1` tag because npm will not publish the same version twice. Subsequent stable releases use [`.github/workflows/publish.yml`](./.github/workflows/publish.yml), triggered by a matching `vX.Y.Z` tag. The workflow checks the tag against `package.json.version`, installs from `bun.lock`, runs type checking and tests, inspects the package, and publishes from the `npm` GitHub environment.
 
 1. Change `package.json.version` to a new, unpublished stable version. Run `bun install` if dependencies change and commit the updated `bun.lock` in that case. Run the development checks above.
-2. Commit and push the version change. Create and push the matching tag (for example, `v0.0.2`) on that commit.
-3. Review the `Publish to npm` workflow's `verify` job. Approve the `npm` environment if it has required reviewers. Confirm the registry version after the `publish` job finishes.
+2. Commit and push the version change. Create and push the matching tag (for example, `v0.0.3`) on that commit.
+3. Review the `Publish to npm` workflow's `verify` job. Approve the `npm` environment if it has required reviewers. Confirm the registry version after the `publish` job finishes. Only after npm publishing succeeds, the `release` job creates a GitHub Release on the existing tag with automatically generated notes; reruns leave an existing release unchanged. The release job needs `contents: write`, while the npm publish job keeps its separate OIDC permission. If npm publication fails, no GitHub Release is created.
 
 The npm account that owns `omo-jev-plugin` must configure a [GitHub Actions Trusted Publisher](https://docs.npmjs.com/trusted-publishers/) for owner `brianhong-dev`, repository `omo-jev-plugin`, workflow filename `publish.yml`, environment `npm`, and the `npm publish` allowed action. In GitHub **Settings → Environments**, create an environment named `npm`; required reviewers and protection of `v*` tags are optional safeguards. The publish job uses GitHub OIDC (`id-token: write`), not a persistent `NPM_TOKEN` secret. npm automatically generates provenance when trusted publishing a public package from a public repository.
 

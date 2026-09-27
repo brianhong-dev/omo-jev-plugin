@@ -1,6 +1,6 @@
 import { TypeSafeClient, type Questions } from "@typesafe-ai/sdk";
 import { z } from "zod";
-import type { PluginConfig } from "./config.js";
+import { resolveApiKey, type PluginConfig } from "./config.js";
 
 export type Candidate = { readonly name: string; readonly description: string };
 export type NextState = {
@@ -68,7 +68,10 @@ export class JevDecider {
   private readonly client: TypeSafeClient;
 
   constructor(private readonly config: PluginConfig, client?: TypeSafeClient) {
+    const apiKey = resolveApiKey(config);
     this.client = client ?? new TypeSafeClient({
+      ...(apiKey ? { apiKey } : {}),
+      ...(config.endpoint ? { baseURL: config.endpoint } : {}),
       defaultModel: config.model,
       timeout: config.limits.timeoutMs,
       retry: { maxRetries: 0 },
