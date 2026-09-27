@@ -1,0 +1,33 @@
+{
+  // Copy to ~/.omo/jev-plugin.jsonc (or .omo/jev-plugin.jsonc in a trusted project).
+  // No TypeSafe API request is made until you set mode to shadow, advise, or act.
+  "enabled": true,
+  "mode": "advise",
+  "model": "jev-1.13.0",
+  "decisions": {
+    "skills": true,
+    "nextAction": true,
+    "toolDiscovery": true,
+    "toolActivation": false,
+    "toolPreflight": false,
+    "resultAssessment": true,
+    "loopDetection": true,
+    "completion": true,
+    "modelRouting": false,
+    "thinkingLevel": false
+  },
+  "models": [],
+  "activatableTools": [],
+  "limits": {
+    "timeoutMs": 1000,
+    "maxCallsPerAgentRun": 30,
+    "stateChars": 2000
+  },
+  "thresholds": {
+    "fit": 0.6,
+    "confidence": 0.65,
+    "risk": 0.8
+  },
+  "includeToolOutput": false,
+  "preflightOnError": "allow"
+}

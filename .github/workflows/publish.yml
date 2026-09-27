@@ -1,0 +1,53 @@
+name: Publish to npm
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - name: Check release version
+        run: |
+          node -e '
+            const { version } = require("./package.json");
+            const tag = process.env.GITHUB_REF_NAME;
+            if (!/^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(tag || "") || tag !== `v${version}`) {
+              throw new Error(`Release tag ${tag} does not match stable package version ${version}`);
+            }
+          '
+      - run: bun install --frozen-lockfile
+      - run: bun run check
+      - run: bun test
+      - run: npm pack --dry-run
+
+  publish:
+    needs: verify
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
+      - run: bun install --frozen-lockfile
+      - name: Set repository metadata for npm provenance
+        run: npm pkg set repository.type=git "repository.url=https://github.com/${GITHUB_REPOSITORY}.git"
+      - run: npm publish --access public

@@ -1,0 +1,44 @@
+{
+  "name": "omo-jev-plugin",
+  "version": "0.1.0",
+  "description": "Configurable Jev decision layer for OmO and senpi",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "license": "MIT",
+  "keywords": ["pi-package", "senpi", "omo", "jev", "agent"],
+  "engines": {
+    "node": ">=20"
+  },
+  "pi": {
+    "extensions": ["./dist/index.js"]
+  },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
+  },
+  "files": ["dist", "README.md", "LICENSE", "jev-plugin.example.jsonc"],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "check": "tsc --noEmit -p tsconfig.json",
+    "test": "bun test",
+    "prepack": "bun run build"
+  },
+  "dependencies": {
+    "@typesafe-ai/sdk": "0.6.0",
+    "jsonc-parser": "^3.3.1",
+    "zod": "^4.1.0"
+  },
+  "devDependencies": {
+    "@code-yeongyu/senpi": "2026.9.27",
+    "@types/bun": "^1.2.0",
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  }
+}
