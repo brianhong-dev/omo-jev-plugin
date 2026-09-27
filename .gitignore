@@ -3,3 +3,5 @@ dist/
 *.tgz
 .DS_Store
 coverage/
+.omo/*
+!.omo/init-deep.json
