@@ -1,0 +1,41 @@
+name: Bug report
+description: Report a reproducible problem with omo-jev-plugin.
+title: "bug: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: "Do not include API keys, private prompts, or sensitive tool output. For security issues, see SECURITY.md instead."
+  - type: input
+    id: version
+    attributes:
+      label: Plugin version
+      placeholder: "0.0.2"
+    validations:
+      required: true
+  - type: input
+    id: runtime
+    attributes:
+      label: OmO / senpi version and operating system
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Include your mode and relevant decisions from jev-plugin.jsonc, with secrets removed.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include relevant redacted output or errors.
+    validations:
+      required: true
