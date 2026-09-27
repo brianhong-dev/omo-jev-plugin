@@ -1,70 +1,79 @@
 # omo-jev-plugin
 
-Jev decision assistance for [senpi](https://www.npmjs.com/package/@code-yeongyu/senpi) and OmO. This is a senpi extension distributed as an npm package. Jev returns typed judgments; senpi remains responsible for calling tools and enforcing permissions.
+[Jev](https://docs.typesafe.ai/)의 구조화된 판단을 [OmO](https://www.npmjs.com/package/omo-ai) / senpi 에이전트에 연결하는 플러그인입니다. 작업 중 스킬과 다음 도구의 적합성을 평가하고, 반복이나 완료 가능성을 살펴 에이전트에 짧은 제안을 전달합니다. Jev가 도구를 직접 실행하거나 senpi의 권한 검사를 대신하지는 않습니다.
 
-## Install
+## 설치
 
-Use senpi's package installer:
+OmO 또는 senpi에서 패키지를 설치합니다.
 
 ```sh
 senpi install npm:omo-jev-plugin
 ```
 
-For a local checkout, run `bun install && bun run build`, then:
+Jev API 키를 **OmO/senpi를 실행하는 프로세스의 환경**에 `TYPESAFE_API_KEY`로 설정하세요. 키 발급과 API 사용법은 [TypeSafe 문서](https://docs.typesafe.ai/introduction/quickstart)를 참고하세요. 키가 없으면 Jev 판단은 실행되지 않으며, 세션에서 경고가 표시됩니다.
 
-```sh
-senpi -e ./dist/index.js
+설치만으로 Jev API를 호출하지는 않습니다. 아래 설정 파일을 만들고 모드를 선택해야 합니다.
+
+## 설정
+
+[`jev-plugin.example.jsonc`](./jev-plugin.example.jsonc)를 `~/.omo/jev-plugin.jsonc`로 복사한 다음 `mode`를 원하는 값으로 설정하세요. 이 파일은 OmO의 `omo.jsonc`와 별개입니다. 설정 변경 후에는 새 세션을 시작하거나 확장을 다시 로드하세요.
+
+가장 간단한 설정은 다음과 같습니다.
+
+```jsonc
+{
+  "mode": "advise",
+  "decisions": {
+    "skills": true,
+    "nextAction": true,
+    "loopDetection": true,
+    "completion": true
+  }
+}
 ```
 
-Set `TYPESAFE_API_KEY` in the environment of the senpi process. The plugin uses the official `@typesafe-ai/sdk` and its `TYPESAFE_BASE_URL` override when present. Without a key, the plugin reports a warning and falls back to ordinary senpi behavior when enabled.
+프로젝트별 설정은 해당 프로젝트의 `.omo/jev-plugin.jsonc`에 넣을 수 있습니다. 프로젝트가 신뢰된 경우에만 읽으며, 전역 설정을 덮어씁니다. `decisions`, `limits`, `thresholds`는 항목별로 병합되고 나머지 항목은 프로젝트 값으로 교체됩니다. 설정 파일이 없을 때 기본 모드는 `off`입니다. 알 수 없는 설정 항목이나 잘못된 JSONC가 있으면 플러그인을 비활성화하고 경고를 표시합니다.
 
-## Configure
-
-Copy [`jev-plugin.example.jsonc`](./jev-plugin.example.jsonc) to `~/.omo/jev-plugin.jsonc`. This is the plugin's own file; it does not edit `~/.omo/omo.jsonc`. A trusted project can override individual fields in `.omo/jev-plugin.jsonc`. Nested `decisions`, `limits`, and `thresholds` are merged; other fields replace the global value. An untrusted project's file is ignored.
-
-The default mode with no configuration is `off`, so installation alone makes no external requests.
-
-| Mode | Behavior |
+| 모드 | 동작 |
 | --- | --- |
-| `off` | No Jev calls. |
-| `shadow` | Judge and record minimal decision metadata in the session; change nothing. |
-| `advise` | Add short, ephemeral recommendations to each model request. |
-| `act` | Advise and apply only explicitly enabled runtime actions. |
+| `off` | Jev를 호출하지 않습니다. 기본값입니다. |
+| `shadow` | 판단을 세션에 기록하지만 에이전트 동작은 바꾸지 않습니다. |
+| `advise` | 판단 결과 중 스킬·도구 후보, 반복 및 완료 가능성을 에이전트에 제안합니다. |
+| `act` | `advise`에 더해, 개별적으로 활성화한 도구 활성화·호출 차단·모델 및 사고 수준 선택을 적용합니다. |
 
-`skills` and `nextAction` examine available skill and active tool descriptions on **each agent turn**, not just when a session starts. `toolDiscovery` can suggest `tool_search` when it is active. `resultAssessment` and `loopDetection` evaluate recent tool outcomes; `completion` adds a tentative completion suggestion, not a forced stop. Calls for identical state are suppressed and `maxCallsPerAgentRun` limits requests.
+`enabled: false`는 모드와 관계없이 플러그인의 판단을 끕니다. 에이전트가 명시적으로 호출한 스킬은 자동 스킬 제안보다 우선합니다. Jev가 적합한 후보를 찾지 못하거나 응답에 확신이 부족하면 후보를 제안하지 않습니다.
 
-The following settings only change runtime state in `act` mode:
+### 판단 범위
 
-- `toolActivation`: promote only tool names explicitly listed in `activatableTools`; leave it off to preserve senpi's ordinary deferred `tool_search` flow.
-- `toolPreflight`: ask Jev whether a proposed call appears outside the user's requested scope. Block when its Noul value meets `thresholds.risk`. `preflightOnError` controls whether an unavailable gate allows or blocks the call. Neither value bypasses senpi's own permission checks.
-- `modelRouting`: choose only from `models` (entries such as `"provider/model-id"`) that are available to this session. Uses session-scoped model selection.
-- `thinkingLevel`: choose among senpi's supported thinking levels for this session.
+`decisions`에서 필요한 항목을 선택합니다. `skills`, `nextAction`, `toolDiscovery`, `resultAssessment`, `loopDetection`, `completion`의 기본값은 `true`이고 나머지는 `false`입니다.
 
-Unknown or low-confidence candidates are not recommended. `thresholds.fit` is the minimum absolute applicability Noul, while `thresholds.confidence` applies to Choice. These numbers are starting points, not calibrated guarantees. The API model is pinned by default to `jev-1.13.0`; retune thresholds before changing it.
+| 항목 | 사용 시 동작 |
+| --- | --- |
+| `skills` | 로드된 스킬 목록에서 적합한 스킬을 제안합니다. |
+| `nextAction`, `toolDiscovery` | 현재 활성 도구 중 다음에 쓸 도구를 제안합니다. 두 항목은 현재 동일한 도구 선택 질문을 켭니다. `tool_search`도 활성 도구라면 후보에 포함될 수 있습니다. |
+| `resultAssessment` | 최근 도구 결과의 진행도를 평가합니다. 현재 점수는 에이전트 제안이나 실행 제어에 반영되지 않습니다. |
+| `loopDetection` | 최근 결과가 같은 실패를 반복하는지 판단해 접근 방식 재검토를 제안합니다. |
+| `completion` | 완료 가능성을 제안합니다. 작업을 강제로 끝내지 않습니다. |
+| `toolActivation` | `act`에서 `activatableTools`에 지정한 도구만 추가로 활성화할 수 있습니다. |
+| `toolPreflight` | `act`에서 제안된 도구 호출이 요청 범위 밖이라고 판단되면 실행 직전에 차단할 수 있습니다. |
+| `modelRouting` | `act`에서 `models`에 나열한 사용 가능한 모델 중 세션 모델을 선택할 수 있습니다. |
+| `thinkingLevel` | `act`에서 세션의 사고 수준을 선택할 수 있습니다. |
 
-Only the bounded current request, tool/skill metadata, and recent tool names with success/error status are sent to Jev by default. Set `includeToolOutput: true` **only if sending snippets of tool output to TypeSafe is acceptable for your environment**; proposed `toolPreflight` requests include the selected call's arguments when enabled. Neither the full transcript nor API key is written to decision entries. Network errors, invalid responses, and a missing API key leave ordinary senpi behavior intact for recommendations.
+Jev 판단은 사용자 요청이 시작될 때만이 아니라, **도구 결과를 받은 후 이어지는 에이전트 턴마다** 갱신됩니다. 동일한 상태에 대한 중복 판단은 건너뜁니다. 모델이 이미 선택한 호출을 다른 도구 호출로 바꾸지는 않습니다.
 
-## Develop
+추가 옵션은 예시 설정 파일에 있습니다.
 
-```sh
-bun install --frozen-lockfile
-bun run check
-bun test
-bun run build
-npm pack --dry-run
-```
+- `model`: Jev API 모델. 기본값 `jev-1.13.0`.
+- `models`: `modelRouting` 후보. `["provider/model-id"]` 형식이며 현재 세션에서 사용 가능한 모델만 고려합니다.
+- `activatableTools`: `toolActivation`의 도구 이름 허용 목록. 기본값은 빈 목록입니다.
+- `limits.timeoutMs`, `limits.maxCallsPerAgentRun`, `limits.stateChars`: 호출 시간(기본 1,000ms), 실행당 최대 호출 수(30회), 요청·결과 텍스트 길이(2,000자)를 제한합니다.
+- `thresholds.fit`, `thresholds.confidence`, `thresholds.risk`: 적합도, 선택 확신도, 호출 차단 기준입니다. 기본값은 각각 `0.6`, `0.65`, `0.8`입니다.
+- `preflightOnError`: 호출 사전 검사에 실패했을 때 `act` 모드에서 호출을 `allow`(기본값)할지 `block`할지 선택합니다.
 
-The `pi.extensions` entry points to `dist/index.js`; `prepack` builds it before publishing. [GitHub Actions](./.github/workflows/publish.yml) verifies the tag, types, tests, and archive before publishing with [npm Trusted Publishing](https://docs.npmjs.com/trusted-publishers/). It uses GitHub OIDC instead of a persistent `NPM_TOKEN`. The `publish` job has `id-token: write` and uses the `npm` GitHub environment; npm automatically attaches provenance for a public package from a public repository.
+## 전송되는 데이터와 문제 해결
 
-## Set up automatic npm releases
+Jev API를 켜면 잘린 사용자 요청과 최근 도구 이름·성공/오류 상태가 TypeSafe로 전송됩니다. 스킬·도구·모델 후보의 이름과 설명도 질문에 포함됩니다. 도구 출력 본문은 기본적으로 전송하지 않으며, `includeToolOutput: true`로 설정한 경우에만 일부 텍스트를 포함합니다. `toolPreflight`를 켜면 해당 호출의 인자도 길이를 제한해 보냅니다. 민감한 작업에서는 이 옵션을 선택하기 전에 전송 범위를 검토하세요.
 
-1. Create a **public GitHub repository**, push this project, and enable GitHub Actions. No GitHub remote is currently embedded in the package. The workflow fills in the exact `repository.url` from `GITHUB_REPOSITORY` on the publish runner, as required by npm provenance. Ensure the repo name/owner you use on npm exactly matches this GitHub repository.
-2. On GitHub, create an environment named **`npm`** under **Settings → Environments**. Add required reviewers if you want approval before every publish. Protect release tags (`v*`) with a repository ruleset so only maintainers can create them. No GitHub `NPM_TOKEN` secret is needed.
-3. A **new npm package must first exist** before its Trusted Publisher settings can be opened. On a machine logged in to an npm account allowed to own the package, confirm `npm whoami`, check that `omo-jev-plugin` is available, run the development checks above, and publish **`0.1.0` once** with `npm publish --access public`. npm may ask for 2FA. Do not push a `v0.1.0` tag afterwards: the registry already has that version.
-4. Open **npmjs.com → Packages → omo-jev-plugin → Settings → Trusted publishing → Add trusted publisher → GitHub Actions**. Set **Organization or user** to your GitHub owner, **Repository** to its exact name, **Workflow filename** to `publish.yml` (not its full path), **Environment name** to `npm`, and enable the **`npm publish`** allowed action. All names are case-sensitive.
-5. For later versions, increment `package.json` and `bun.lock` together, commit them, and push a matching stable tag `vX.Y.Z`. The `publish.yml` workflow refuses a tag that differs from `package.json.version` or includes a prerelease suffix. Its `verify` job must pass before the OIDC-enabled `publish` job runs. With the GitHub environment configured, the publish job pauses for any required review. A package version cannot be published twice.
-6. Once a Trusted Publisher release succeeds, consider npm package **Settings → Publishing access → Require two-factor authentication and disallow tokens**. This does not disable OIDC trusted publishing. Remove any old publish tokens only after the OIDC path has worked.
+제안용 Jev 요청이 실패하면 해당 판단을 건너뛰고 senpi의 일반 동작을 유지합니다. `toolPreflight`의 실패 시 차단 여부는 `preflightOnError`가 결정합니다. 플러그인이 동작하지 않으면 `TYPESAFE_API_KEY`, `mode`, JSONC 오류 경고, 프로젝트 신뢰 상태를 확인하세요.
 
-The first manual publish is a one-time bootstrap. If a package with this name already belongs to someone else by then, change `package.json.name` before the first publish and use that exact name in npm settings. The GitHub owner and repository cannot be filled in here until the destination repository is chosen.
-
-See [npm Trusted Publishers](https://docs.npmjs.com/trusted-publishers/) for the current field names, [npm provenance](https://docs.npmjs.com/generating-provenance-statements/) for public repository requirements, and [GitHub environments](https://docs.github.com/en/actions/deployment/targeting-different-environments/using-environments-for-deployment) for reviewer protection.
+개발과 릴리스에 참여하려면 [CONTRIBUTING.md](./CONTRIBUTING.md)를 참고하세요.
