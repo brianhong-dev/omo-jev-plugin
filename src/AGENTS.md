@@ -12,7 +12,7 @@ Runtime integration and its configuration, Jev decision, and update boundaries. 
 | Update notice | `update.ts` | Installed package version and npm registry comparison |
 
 ## CONVENTIONS
-- `session_start` checks for updates before loading config or requiring a key; update failures do not prevent startup.
+- `session_start` clears stale per-session state, then constructs `JevDecider` only with an enabled, non-`off` config and available API key.
 - `before_agent_start` resets per-run state; explicit skill syntax suppresses automatic skill suggestions.
 - `turn_start` deduplicates an unchanged state fingerprint and shares the configured call budget with `tool_call` preflight.
 - `shadow` records decisions only; `advise` injects hidden context; `act` alone may activate tools or change the session model/thinking level.
@@ -21,7 +21,7 @@ Runtime integration and its configuration, Jev decision, and update boundaries. 
 - `decision.ts` validates selected candidates and thresholds locally; the SDK client disables retries and logging.
 - `tool_result` retains the last four summaries; actual output text is included only when configured.
 - `config.ts` resolves the API key from the file first, then `TYPESAFE_API_KEY`.
-- `update.ts` accepts a request function so registry checks can be tested without network access.
+- `update.ts` compares three numeric version components and treats unavailable registry responses as no update.
 
 ## ANTI-PATTERNS
 - Do not offer an inactive tool unless `act` mode permits its explicit activation.
