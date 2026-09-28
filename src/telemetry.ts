@@ -27,10 +27,13 @@ export type TelemetryMetadata = {
 
 export type TelemetryEvent = TelemetryMetadata & (
   | { readonly type: "session_started"; readonly schemaVersion: 1; readonly installationId: string; readonly pluginVersion: string }
-  | { readonly type: "session_summary"; readonly schemaVersion: 1; readonly installationId: string;
+  | { readonly type: "session_summary"; readonly schemaVersion: 2; readonly installationId: string;
     readonly pluginVersion: string; readonly mode: "off" | "shadow" | "advise" | "act";
-    readonly provider: "jev_compatible" | "respan-ai"; readonly decisionCalls: number;
-    readonly inputTokens: number; readonly outputTokens: number; readonly estimatedCost: number | null }
+    readonly provider: "jev_compatible" | "respan-ai" }
+  | { readonly type: "turn_usage"; readonly schemaVersion: 1; readonly installationId: string;
+    readonly pluginVersion: string; readonly usageSessionId: string; readonly eventId: string;
+    readonly turnIndex: number; readonly inputTokens: number; readonly outputTokens: number;
+    readonly estimatedCost: number | null }
   | { readonly type: "decision_recorded"; readonly schemaVersion: 1; readonly installationId: string;
     readonly pluginVersion: string; readonly decisionKind: "turn" | "preflight" | "code_search";
     readonly outcome: "success" | "error"; readonly recommendationMade: boolean;
@@ -59,6 +62,10 @@ export class TelemetryRecorder {
   }
 
   async sessionSummary(consented: boolean, event: Extract<TelemetryEvent, { type: "session_summary" }>): Promise<void> {
+    if (consented) await this.exporter.send(event);
+  }
+
+  async turnUsage(consented: boolean, event: Extract<TelemetryEvent, { type: "turn_usage" }>): Promise<void> {
     if (consented) await this.exporter.send(event);
   }
 

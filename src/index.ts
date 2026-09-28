@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { noticeEntryRenderer, type ExtensionAPI, type ExtensionContext } from "@code-yeongyu/senpi";
 import { Type } from "typebox";
 import { z } from "zod";
@@ -130,7 +131,7 @@ export default function jevPlugin(
 ): void {
   const telemetry = new TelemetryRecorder(exporter);
   let installationInfo: InstallationInfo | undefined;
-  let sessionCalls = 0;
+  let usageSessionId: string = randomUUID();
   let config: PluginConfig | undefined;
   let decider: JevDecider | undefined;
   let request = "";
@@ -278,7 +279,7 @@ export default function jevPlugin(
   pi.on("session_start", async (_event, ctx) => {
     reloadPending = false;
     installationInfo = undefined;
-    sessionCalls = 0;
+    usageSessionId = ctx.sessionManager.getSessionId?.() || randomUUID();
     restoreUsage(ctx);
     config = undefined;
     decider = undefined;
@@ -341,7 +342,7 @@ export default function jevPlugin(
         decider = new JevDecider(config, undefined, (usage, model) => {
           turnUsage = addUsage(turnUsage, usage, model);
           sessionUsage = addUsage(sessionUsage, usage, model);
-        }, () => { callCount++; sessionCalls++; });
+        }, () => { callCount++; });
       }
       if (decider && config.experimentalCodeSearch && ctx.isProjectTrusted()) {
         if (!searchRegistered) {
@@ -391,7 +392,7 @@ export default function jevPlugin(
       }
       throw error;
     } finally {
-      if (installationInfo) {
+      if (installationInfo && config?.enabled) {
         try {
           await telemetry.sessionStarted(installationInfo, telemetryMetadata(ctx));
         } catch (error) {
@@ -582,13 +583,28 @@ export default function jevPlugin(
     }
   });
 
-  pi.on("turn_end", async (event) => {
+  pi.on("turn_end", async (event, ctx) => {
     if (config?.mode === "shadow" && shadowFeedback) {
       pi.appendEntry("jev:feedback", { turnIndex: event.turnIndex, ...shadowFeedback });
       shadowFeedback = undefined;
     }
     if (decider) {
       pi.appendEntry("jev:usage", { turnIndex: event.turnIndex, turn: turnUsage, session: sessionUsage });
+      if (installationInfo && config?.enabled && config.telemetry.detailed
+        && (turnUsage.inputTokens !== 0 || turnUsage.outputTokens !== 0 || turnUsage.estimatedCost !== 0)) {
+        try {
+          await telemetry.turnUsage(true, {
+            type: "turn_usage", schemaVersion: 1,
+            installationId: installationInfo.installationId,
+            pluginVersion: installationInfo.lastPluginVersion,
+            usageSessionId, eventId: randomUUID(), turnIndex: event.turnIndex,
+            ...telemetryMetadata(ctx),
+            ...turnUsage,
+          });
+        } catch (error) {
+          if (!(error instanceof Error)) throw error;
+        }
+      }
       turnUsage = emptyUsage;
     }
     try {
@@ -614,7 +630,6 @@ export default function jevPlugin(
   pi.on("tool_call", async (event, ctx) => {
     if (!canCall() || !config?.decisions.toolPreflight || !decider) return;
     callCount++;
-    sessionCalls++;
     const before = sessionUsage;
     try {
       const risk = await decider.risk(request, event.toolName, event.input, ctx.signal);
@@ -638,17 +653,13 @@ export default function jevPlugin(
   });
 
   pi.on("session_shutdown", async (_event, ctx) => {
-    if (installationInfo && config?.telemetry.detailed) {
+    if (installationInfo && config?.enabled && config.telemetry.detailed) {
       try {
         await telemetry.sessionSummary(true, {
-          type: "session_summary", schemaVersion: 1,
+          type: "session_summary", schemaVersion: 2,
           installationId: installationInfo.installationId,
           pluginVersion: installationInfo.lastPluginVersion,
           mode: config.mode, provider: config.provider.selected,
-          decisionCalls: sessionCalls,
-          inputTokens: sessionUsage.inputTokens,
-          outputTokens: sessionUsage.outputTokens,
-          estimatedCost: sessionUsage.estimatedCost,
           ...telemetryMetadata(ctx),
         });
       } catch (error) {

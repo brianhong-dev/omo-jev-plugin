@@ -52,6 +52,40 @@ test("attaches live session metadata to the basic event and consented decision e
   expect(flushes).toBe(2);
 });
 
+test("collects lifecycle telemetry in off mode but none when disabled", async () => {
+  // Given a trusted project that chooses off mode or disables the plugin.
+  const cwd = await mkdtemp(join(tmpdir(), "omo-jev-off-telemetry-"));
+  try {
+    await mkdir(join(cwd, ".omo"));
+    const configPath = join(cwd, ".omo", "jev-plugin.jsonc");
+    for (const enabled of [true, false]) {
+      await writeFile(configPath, JSON.stringify({ enabled, mode: "off" }));
+      const captured: TelemetryEvent[] = [];
+      const handlers = new Map<string, (event: object, ctx: object) => Promise<void>>();
+      jevPlugin({
+        on: (name: string, handler: (event: object, ctx: object) => Promise<void>) => handlers.set(name, handler),
+        registerEntryRenderer: () => {},
+        registerCommand: () => {},
+        appendEntry: () => {},
+      } as unknown as Parameters<typeof jevPlugin>[0], {
+        async send(event) { captured.push(event); },
+      });
+      const ctx = {
+        cwd, isProjectTrusted: () => true,
+        sessionManager: { getBranch: () => [], getSessionId: () => "off-session" },
+        ui: { notify: () => {} },
+      };
+      // When an off-mode session starts and shuts down.
+      await handlers.get("session_start")?.({ type: "session_start" }, ctx);
+      await handlers.get("session_shutdown")?.({ type: "session_shutdown" }, ctx);
+      // Then lifecycle events are emitted only when the plugin remains enabled.
+      expect(captured.map((event) => event.type)).toEqual(enabled ? ["session_started", "session_summary"] : []);
+    }
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("records an update card instead of a replaceable status or persistent widget", async () => {
   const current = await installedVersion();
   const latest = current.replace(/\d+$/, (patch) => String(Number(patch) + 1));
@@ -277,10 +311,14 @@ test("records per-turn and session Jev usage in the UI history without a startup
     }));
     const runtime = createExtensionRuntime();
     const history: { type: string; data: unknown }[] = [];
+    const captured: TelemetryEvent[] = [];
     runtime.appendEntry = (type, data) => { history.push({ type, data }); };
     runtime.getActiveTools = () => [];
     runtime.getAllTools = () => [];
-    const extension = await loadExtensionFromFactory(testPlugin, cwd, createEventBus(), runtime);
+    const extension = await loadExtensionFromFactory(
+      (pi) => jevPlugin(pi, { async send(event) { captured.push(event); } }),
+      cwd, createEventBus(), runtime,
+    );
     const notices: string[] = [];
     const widgets: string[] = [];
     const ctx = {
@@ -293,6 +331,7 @@ test("records per-turn and session Jev usage in the UI history without a startup
         setWidget: (key: string) => { widgets.push(key); },
       },
       modelRegistry: { getAvailable: () => [] },
+      thinkingLevel: "high",
       signal: undefined,
     };
     const emit = async (name: string, event: object) => {
@@ -306,14 +345,28 @@ test("records per-turn and session Jev usage in the UI history without a startup
     });
     await emit("turn_start", { type: "turn_start", turnIndex: 0, timestamp: 0 });
     await emit("turn_end", { type: "turn_end", turnIndex: 0 });
+    await emit("turn_end", { type: "turn_end", turnIndex: 0 });
     await emit("tool_result", { type: "tool_result", toolName: "read", isError: false, content: [] });
     await emit("turn_start", { type: "turn_start", turnIndex: 1, timestamp: 1 });
     await emit("turn_end", { type: "turn_end", turnIndex: 1 });
+    await emit("session_shutdown", { type: "session_shutdown" });
 
     // Then the host receives display-only records with separate turn and session totals.
     const records = history.filter((entry) => entry.type === "jev:usage").map((entry) => usageEntrySchema.parse(entry.data));
-    expect(records.map(({ turn, session }) => [turn.inputTokens, session.inputTokens])).toEqual([[11, 11], [11, 22]]);
-    expect(records[1]?.session.estimatedCost).toBe(22 * 0.042 / 1_000_000);
+    expect(records.map(({ turn, session }) => [turn.inputTokens, session.inputTokens]))
+      .toEqual([[11, 11], [0, 11], [11, 22]]);
+    expect(records.at(-1)?.session.estimatedCost).toBe(22 * 0.042 / 1_000_000);
+    const usage = captured.filter((event) => event.type === "turn_usage");
+    expect(usage).toHaveLength(2);
+    expect(usage.map((event) => [event.turnIndex, event.inputTokens, event.outputTokens]))
+      .toEqual([[0, 11, 2], [1, 11, 2]]);
+    expect(usage[0]?.usageSessionId).toBe(usage[1]?.usageSessionId);
+    expect(usage[0]?.eventId).not.toBe(usage[1]?.eventId);
+    expect(usage[0]?.usageSessionId).toMatch(/^[0-9a-f-]{36}$/);
+    const summary = captured.find((event) => event.type === "session_summary");
+    expect(summary).toMatchObject({ schemaVersion: 2, mode: "shadow" });
+    expect(summary).not.toHaveProperty("inputTokens");
+    expect(summary).not.toHaveProperty("decisionCalls");
     expect(notices.filter((message) => message.startsWith("Jev active:"))).toHaveLength(1);
     expect(widgets).toEqual([]);
     const theme = getThemeByName("dark");
