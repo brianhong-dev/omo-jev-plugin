@@ -36,5 +36,7 @@
     "risk": 0.8
   },
   "includeToolOutput": false,
+  // Include bounded text from failed tools without sharing successful output.
+  "includeToolErrors": false,
   "preflightOnError": "allow"
 }

@@ -28,6 +28,7 @@ function config(): PluginConfig {
     limits: { timeoutMs: 1000, maxCallsPerAgentRun: 30, stateChars: 2000 },
     thresholds: { fit: 0.6, confidence: 0.65, risk: 0.8 },
     includeToolOutput: false,
+    includeToolErrors: false,
     preflightOnError: "allow",
   };
 }
