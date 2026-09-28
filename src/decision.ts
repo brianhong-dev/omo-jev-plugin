@@ -2,6 +2,7 @@ import { TypeSafeClient, type Questions, type Usage } from "@typesafe-ai/sdk";
 import { readFile } from "node:fs/promises";
 import { z } from "zod";
 import { resolveApiKey, type PluginConfig } from "./config.js";
+import type { VerificationResult } from "./evidence.js";
 
 export type Candidate = { readonly name: string; readonly description: string; readonly filePath?: string };
 export function redactText(text: string, config: PluginConfig): string {
@@ -31,6 +32,9 @@ export type NextState = {
   readonly lastResults: readonly string[];
   readonly tools: readonly Candidate[];
   readonly canDiscoverTools: boolean;
+  readonly requirements: readonly string[];
+  readonly requirementsTruncated: boolean;
+  readonly verificationResults: readonly VerificationResult[];
   readonly skills: readonly Candidate[];
   readonly models: readonly Candidate[];
   readonly thinking: readonly Candidate[];
@@ -64,6 +68,11 @@ export type NextDecision = {
   readonly progress?: number;
   readonly complete?: boolean;
   readonly completionEvidence?: boolean;
+  readonly verifiedRequirements?: readonly {
+    readonly requirementIndex: number;
+    readonly result: VerificationResult;
+  }[];
+  readonly requirementCount?: number;
 };
 
 function select(
@@ -152,11 +161,11 @@ export class JevDecider {
         type: "noul",
         instructions: "Is the user's request fully satisfied by the observed work?",
       };
-      if (state.lastResults.length > 0) {
-        questions["completionEvidence"] = {
-          type: "noul",
-          instructions: "Do the recent results include a direct successful check that verifies the user's request?",
-        };
+      for (const [index] of state.requirements.entries()) {
+        addChoice(questions, `verify${index}`, state.verificationResults.map((result) => ({
+          name: result.id,
+          description: `${result.kind} succeeded via ${result.tool}${result.detail ? `: ${result.detail}` : ""}`,
+        })), this.config);
       }
     }
     if (Object.keys(questions).length === 0) return {};
@@ -170,6 +179,10 @@ export class JevDecider {
           availableTools: state.tools.filter(({ name }) => name !== "tool_search")
             .slice(0, 254).map(({ name }) => redactText(name, this.config)),
         } : {}),
+        ...(this.config.decisions.completion ? {
+          requirements: state.requirements.map((item) =>
+            redactText(item, this.config).slice(0, this.config.limits.stateChars)),
+        } : {}),
       },
       questions,
     }, signal ? { signal } : {}));
@@ -178,7 +191,15 @@ export class JevDecider {
     const looping = noulAnswer.safeParse(answers["looping"]);
     const progress = scoreAnswer.safeParse(answers["progress"]);
     const complete = noulAnswer.safeParse(answers["complete"]);
-    const completionEvidence = noulAnswer.safeParse(answers["completionEvidence"]);
+    const verifiedRequirements = state.requirements.flatMap((_requirement, index) => {
+      if (!this.config.decisions.completion) return [];
+      const id = select(answers, `verify${index}`, state.verificationResults.map((result) => ({
+        name: result.id,
+        description: result.kind,
+      })), this.config);
+      const result = state.verificationResults.find((item) => item.id === id);
+      return result ? [{ requirementIndex: index, result }] : [];
+    });
     const tool = select(answers, "tool", state.tools.filter(({ name }) => name !== "tool_search"), this.config);
     const discoverTools = noulAnswer.safeParse(answers["discoverTools"]);
     let skill = select(answers, "skill", state.skills, this.config);
@@ -219,8 +240,12 @@ export class JevDecider {
       ...(looping.success ? { looping: looping.data.noul >= this.config.thresholds.risk } : {}),
       ...(progress.success ? { progress: progress.data.score } : {}),
       ...(complete.success ? { complete: complete.data.noul >= this.config.thresholds.fit } : {}),
-      ...(completionEvidence.success
-        ? { completionEvidence: completionEvidence.data.noul >= this.config.thresholds.fit } : {}),
+      ...(this.config.decisions.completion ? {
+        completionEvidence: state.requirements.length > 0 && !state.requirementsTruncated
+          && verifiedRequirements.length === state.requirements.length,
+        verifiedRequirements,
+        requirementCount: state.requirements.length,
+      } : {}),
     };
   }
 
