@@ -662,3 +662,74 @@ test("maps an opted-in successful HTTP check without persisting response text", 
     await rm(cwd, { recursive: true, force: true });
   }
 });
+
+test("keeps the final Jev call for a later verified result", async () => {
+  // Given a one-call budget and a completion-only configuration.
+  const cwd = await mkdtemp(join(tmpdir(), "omo-jev-budget-"));
+  let requests = 0;
+  const server = Bun.serve({
+    port: 0,
+    fetch() {
+      requests++;
+      return Response.json({
+        model: "jev-1.13.0",
+        answers: {
+          complete: { type: "noul", noul: 0.9 },
+          verify0: { type: "choice", choice: "check-1", confidence: 0.9,
+            probabilities: { "check-1": 0.9, __none__: 0.1 } },
+          verify0Fits: { type: "noul", noul: 0.9 },
+        },
+        usage: { input_tokens: 5, output_tokens: 2 },
+      });
+    },
+  });
+  try {
+    await mkdir(join(cwd, ".omo"));
+    await writeFile(join(cwd, ".omo", "jev-plugin.jsonc"), JSON.stringify({
+      mode: "shadow", apiKey: "test-key", endpoint: `http://127.0.0.1:${server.port}`,
+      limits: { maxCallsPerAgentRun: 1 },
+      decisions: {
+        skills: false, nextAction: false, toolDiscovery: false, toolActivation: false,
+        toolPreflight: false, resultAssessment: false, loopDetection: false,
+        completion: true, modelRouting: false, thinkingLevel: false,
+      },
+    }));
+    const runtime = createExtensionRuntime();
+    const history: Array<{ type: string; data: unknown }> = [];
+    runtime.appendEntry = (type, data) => { history.push({ type, data }); };
+    runtime.getActiveTools = () => [];
+    runtime.getAllTools = () => [];
+    const extension = await loadExtensionFromFactory(jevPlugin, cwd, createEventBus(), runtime);
+    const ctx = {
+      cwd, isProjectTrusted: () => true,
+      sessionManager: { getBranch: () => [] },
+      ui: { notify: () => {} },
+      modelRegistry: { getAvailable: () => [] },
+      signal: undefined,
+    };
+    const emit = async (name: string, event: object) => {
+      for (const handler of extension.handlers.get(name) ?? []) await Reflect.apply(handler, undefined, [event, ctx]);
+    };
+
+    // When an unsupported initial turn precedes an actual successful check.
+    await emit("session_start", { type: "session_start" });
+    await emit("before_agent_start", {
+      type: "before_agent_start", prompt: "Run tests", systemPromptOptions: { skills: [] },
+    });
+    await emit("turn_start", { type: "turn_start", turnIndex: 0, timestamp: 0 });
+    await emit("tool_result", { type: "tool_result", toolName: "bash", toolCallId: "check-1",
+      input: { command: "bun test" }, isError: false, content: [] });
+    await emit("turn_start", { type: "turn_start", turnIndex: 1, timestamp: 1 });
+    await emit("turn_start", { type: "turn_start", turnIndex: 2, timestamp: 2 });
+
+    // Then exactly one API request records a mapped check after the result exists.
+    expect(requests).toBe(1);
+    expect(history.filter(({ type }) => type === "jev:decision")).toHaveLength(2);
+    expect(history.find(({ type, data }) => type === "jev:decision"
+      && data && typeof data === "object" && "completionEvidence" in data && data.completionEvidence === true)?.data)
+      .toMatchObject({ verifiedRequirements: [{ requirementIndex: 0, resultId: "check-1" }] });
+  } finally {
+    server.stop(true);
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
