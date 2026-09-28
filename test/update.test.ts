@@ -1,5 +1,8 @@
 import { expect, test } from "bun:test";
-import { checkVersion, installedVersion } from "../src/update.js";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { checkVersion, installedVersion, updatePlugin } from "../src/update.js";
 
 test("reports a newer npm version across semver segments", async () => {
   // Given the registry's latest version.
@@ -41,4 +44,22 @@ test("reads the installed version from the package manifest", async () => {
   const current = await installedVersion();
   // Then it matches the version used to build this checkout.
   expect(current).toBe("0.0.8");
+});
+
+test("runs the OmO extension updater without a shell", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "omo-jev-update-command-"));
+  const launcher = join(dir, "launcher.mjs");
+  const output = join(dir, "args.json");
+  const previous = process.env["OMO_BIN"];
+  try {
+    await writeFile(launcher, `import { writeFileSync } from "node:fs";
+writeFileSync(${JSON.stringify(output)}, JSON.stringify(process.argv.slice(2)));`);
+    process.env["OMO_BIN"] = launcher;
+    await updatePlugin();
+    expect(JSON.parse(await readFile(output, "utf8"))).toEqual(["update", "npm:omo-jev-plugin"]);
+  } finally {
+    if (previous === undefined) delete process.env["OMO_BIN"];
+    else process.env["OMO_BIN"] = previous;
+    await rm(dir, { recursive: true, force: true });
+  }
 });

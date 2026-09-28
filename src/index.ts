@@ -9,7 +9,7 @@ import { classifyFailure, planRecovery, type Attempt, type FailureKind, type Rec
 import { isSuccessfulCheck, replayShadow, shadowFeedbackSchema, type ShadowFeedback } from "./shadow.js";
 import { PostHogExporter } from "./posthog.js";
 import { TelemetryRecorder, updateInstallationInfo, type InstallationInfo, type TelemetryExporter, type TelemetryMetadata } from "./telemetry.js";
-import { checkVersion, installedVersion } from "./update.js";
+import { checkVersion, installedVersion, updatePlugin } from "./update.js";
 import { addUsage, emptyUsage, formatUsage, usageEntrySchema, type UsageTotals } from "./usage.js";
 
 const thinkingSchema = z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
@@ -123,7 +123,11 @@ export function formatDecisionNotice(
   ].join(" | ");
 }
 
-export default function jevPlugin(pi: ExtensionAPI, exporter: TelemetryExporter = new PostHogExporter()): void {
+export default function jevPlugin(
+  pi: ExtensionAPI,
+  exporter: TelemetryExporter = new PostHogExporter(),
+  installUpdate: () => Promise<void> = updatePlugin,
+): void {
   const telemetry = new TelemetryRecorder(exporter);
   let installationInfo: InstallationInfo | undefined;
   let sessionCalls = 0;
@@ -147,6 +151,21 @@ export default function jevPlugin(pi: ExtensionAPI, exporter: TelemetryExporter 
   let verificationResults: VerificationResult[] = [];
   let recentAttempts: Attempt[] = [];
   let searchRegistered = false;
+  let reloadPending = false;
+  let reloadInFlight = false;
+
+  async function reloadWhenIdle(ctx: ExtensionContext): Promise<void> {
+    if (!reloadPending || reloadInFlight || !ctx.requestReload || !ctx.isIdle() || ctx.hasPendingMessages()
+      || ctx.isCompacting?.()) return;
+    if (ctx.checkReloadVeto && (await ctx.checkReloadVeto()).cancelled) return;
+    reloadInFlight = true;
+    try {
+      await ctx.requestReload();
+      reloadPending = false;
+    } finally {
+      reloadInFlight = false;
+    }
+  }
 
   function telemetryMetadata(ctx: ExtensionContext): TelemetryMetadata {
     return {
@@ -257,6 +276,7 @@ export default function jevPlugin(pi: ExtensionAPI, exporter: TelemetryExporter 
   }
 
   pi.on("session_start", async (_event, ctx) => {
+    reloadPending = false;
     installationInfo = undefined;
     sessionCalls = 0;
     restoreUsage(ctx);
@@ -285,6 +305,7 @@ export default function jevPlugin(pi: ExtensionAPI, exporter: TelemetryExporter 
       ctx.ui.notify(`Jev installation information unavailable: ${error.message}`, "warning");
     }
     try {
+      config = await loadConfig(ctx.cwd, ctx.isProjectTrusted());
       const current = await installedVersion();
       const result = await checkVersion(current);
       if (result) {
@@ -292,11 +313,26 @@ export default function jevPlugin(pi: ExtensionAPI, exporter: TelemetryExporter 
           ? { status: "update", current, available: result.version }
           : { status: "current", current });
       }
-    } catch (error) {
-      if (!(error instanceof Error)) throw error;
-    }
-    try {
-      config = await loadConfig(ctx.cwd, ctx.isProjectTrusted());
+      if (config.autoUpdate && result?.status === "update") {
+        if (!ctx.requestReload) {
+          ctx.ui.notify("Jev automatic update requires a host with session reload support.", "warning");
+        } else {
+          try {
+            await installUpdate();
+            reloadPending = true;
+            ctx.ui.notify(`omo-jev-plugin ${result.version} installed; reloading the session.`, "info");
+            setImmediate(() => {
+              void reloadWhenIdle(ctx).catch((error: unknown) => {
+                if (!(error instanceof Error)) throw error;
+                ctx.ui.notify(`Jev session reload failed: ${error.message}`, "warning");
+              });
+            });
+          } catch (error) {
+            if (!(error instanceof Error)) throw error;
+            ctx.ui.notify(`Jev automatic update failed: ${error.message}`, "warning");
+          }
+        }
+      }
       const notice = startupNotice(config);
       if (notice) {
         ctx.ui.notify(notice.message, notice.type);
@@ -362,6 +398,15 @@ export default function jevPlugin(pi: ExtensionAPI, exporter: TelemetryExporter 
           if (!(error instanceof Error)) throw error;
         }
       }
+    }
+  });
+
+  pi.on("agent_settled", async (_event, ctx) => {
+    try {
+      await reloadWhenIdle(ctx);
+    } catch (error) {
+      if (!(error instanceof Error)) throw error;
+      ctx.ui.notify(`Jev session reload failed: ${error.message}`, "warning");
     }
   });
 

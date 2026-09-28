@@ -12,7 +12,7 @@ OmO 또는 senpi에서 패키지를 설치합니다.
 omo install npm:omo-jev-plugin
 ```
 
-플러그인 로딩 시 npm에 새 버전이 있으면 설정 파일과 API 키를 확인하기 전에 UI로 업데이트를 안내합니다. `omo update npm:omo-jev-plugin`으로 업데이트할 수 있습니다. npm 조회가 실패해도 플러그인 시작은 계속됩니다.
+플러그인 로딩 시 npm에 새 버전이 있으면 UI로 업데이트를 안내합니다. `omo update npm:omo-jev-plugin`으로 직접 업데이트할 수 있습니다. `~/.omo/jev-plugin.jsonc`에서 `"autoUpdate": true`로 설정하면 새 버전을 자동 설치하고 유휴 상태에서 세션 리로드를 요청합니다. 기본값은 `false`이며 호스트가 세션 리로드를 지원해야 합니다. 판단 모드가 `off`여도 작동합니다. npm 조회나 설치에 실패해도 시작은 계속되며, 리로드가 보류되면 다음 유휴 시점에 다시 시도합니다.
 
 API 키는 `~/.omo/jev-plugin.jsonc`의 `provider.jev_compatible.apiKey` 또는 `provider.respan-ai.apiKey`에 공급자별로 설정합니다. 없으면 각각 **OmO/senpi를 실행하는 프로세스의 환경 변수** `TYPESAFE_API_KEY` 또는 `OPENROUTER_API_KEY`를 사용합니다. 공급자별 `endpoint`도 설정할 수 있습니다. 프로젝트별 설정에 키를 넣었다면 파일을 공유할 때 주의하세요. 선택한 공급자의 키가 없으면 로딩 직후 경고하고 판단 요청을 보내지 않습니다.
 
