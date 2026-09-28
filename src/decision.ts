@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { z } from "zod";
 import { resolveApiKey, type PluginConfig } from "./config.js";
 import type { VerificationResult } from "./evidence.js";
+import type { Attempt } from "./recovery.js";
 
 export type Candidate = { readonly name: string; readonly description: string; readonly filePath?: string };
 export function redactText(text: string, config: PluginConfig): string {
@@ -31,10 +32,12 @@ export type NextState = {
   readonly request: string;
   readonly lastResults: readonly string[];
   readonly tools: readonly Candidate[];
+  readonly activeTools: readonly string[];
   readonly canDiscoverTools: boolean;
   readonly requirements: readonly string[];
   readonly requirementsTruncated: boolean;
   readonly verificationResults: readonly VerificationResult[];
+  readonly attempts: readonly Attempt[];
   readonly skills: readonly Candidate[];
   readonly models: readonly Candidate[];
   readonly thinking: readonly Candidate[];
@@ -61,6 +64,7 @@ const responseSchema = z.object({
 export type NextDecision = {
   readonly tool?: string;
   readonly discoverTools?: boolean;
+  readonly recoveryTool?: string;
   readonly skill?: string;
   readonly model?: string;
   readonly thinking?: string;
@@ -138,6 +142,12 @@ export class JevDecider {
         instructions: "Are the available tools insufficient for the task, so tool_search should discover a better tool?",
       };
     }
+    if ((this.config.decisions.resultAssessment || this.config.decisions.loopDetection)
+      && state.lastResults.length > 0) {
+      const attempted = new Set(state.attempts.map(({ tool }) => tool));
+      addChoice(questions, "recoveryTool", state.tools.filter(({ name }) =>
+        state.activeTools.includes(name) && name !== "tool_search" && !attempted.has(name)), this.config);
+    }
     if (this.config.decisions.skills) addChoice(questions, "skill", state.skills, this.config);
     if (this.config.decisions.modelRouting) addChoice(questions, "model", state.models, this.config);
     if (this.config.decisions.thinkingLevel) addChoice(questions, "thinking", state.thinking, this.config);
@@ -202,6 +212,9 @@ export class JevDecider {
     });
     const tool = select(answers, "tool", state.tools.filter(({ name }) => name !== "tool_search"), this.config);
     const discoverTools = noulAnswer.safeParse(answers["discoverTools"]);
+    const attempted = new Set(state.attempts.map(({ tool }) => tool));
+    const recoveryTool = select(answers, "recoveryTool", state.tools.filter(({ name }) =>
+      state.activeTools.includes(name) && name !== "tool_search" && !attempted.has(name)), this.config);
     let skill = select(answers, "skill", state.skills, this.config);
     if (skill && this.config.skillRerank && availableCalls >= 2 && state.skills.length >= 24) {
       const ranked = choiceAnswer.safeParse(answers["skill"]);
@@ -234,6 +247,7 @@ export class JevDecider {
     return {
       ...(tool ? { tool } : {}),
       ...(discoverTools.success ? { discoverTools: !tool && discoverTools.data.noul >= this.config.thresholds.fit } : {}),
+      ...(recoveryTool ? { recoveryTool } : {}),
       ...(skill ? { skill } : {}),
       ...(model ? { model } : {}),
       ...(thinking ? { thinking } : {}),
