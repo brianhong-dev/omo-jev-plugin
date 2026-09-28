@@ -17,15 +17,29 @@ const installationInfoSchema = z.strictObject({
 export type InstallationInfo = z.infer<typeof installationInfoSchema>;
 export const installationInfoPath = (): string => join(homedir(), ".omo", "jev-plugin-info.jsonc");
 
-export type TelemetryEvent =
+export type TelemetryMetadata = {
+  readonly omoSessionId: string | null;
+  readonly pluginProvider: "jev_compatible" | "respan-ai" | null;
+  readonly pluginModel: string | null;
+  readonly llmModel: string | null;
+  readonly thinkingEffort: string | null;
+};
+
+export type TelemetryEvent = TelemetryMetadata & (
   | { readonly type: "session_started"; readonly schemaVersion: 1; readonly installationId: string; readonly pluginVersion: string }
   | { readonly type: "session_summary"; readonly schemaVersion: 1; readonly installationId: string;
     readonly pluginVersion: string; readonly mode: "off" | "shadow" | "advise" | "act";
     readonly provider: "jev_compatible" | "respan-ai"; readonly decisionCalls: number;
-    readonly inputTokens: number; readonly outputTokens: number; readonly estimatedCost: number | null };
+    readonly inputTokens: number; readonly outputTokens: number; readonly estimatedCost: number | null }
+  | { readonly type: "decision_recorded"; readonly schemaVersion: 1; readonly installationId: string;
+    readonly pluginVersion: string; readonly decisionKind: "turn" | "preflight" | "code_search";
+    readonly outcome: "success" | "error"; readonly recommendationMade: boolean;
+    readonly blocked: boolean | null; readonly inputTokens: number;
+    readonly outputTokens: number; readonly estimatedCost: number | null });
 
 export interface TelemetryExporter {
   send(event: TelemetryEvent): Promise<void>;
+  flush?(): Promise<void>;
 }
 
 export class NoopTelemetryExporter implements TelemetryExporter {
@@ -35,15 +49,25 @@ export class NoopTelemetryExporter implements TelemetryExporter {
 export class TelemetryRecorder {
   constructor(private readonly exporter: TelemetryExporter = new NoopTelemetryExporter()) {}
 
-  async sessionStarted(info: InstallationInfo): Promise<void> {
+  async sessionStarted(info: InstallationInfo, metadata: TelemetryMetadata): Promise<void> {
     await this.exporter.send({
       type: "session_started", schemaVersion: 1,
       installationId: info.installationId, pluginVersion: info.lastPluginVersion,
+      ...metadata,
     });
+    await this.exporter.flush?.();
   }
 
   async sessionSummary(consented: boolean, event: Extract<TelemetryEvent, { type: "session_summary" }>): Promise<void> {
     if (consented) await this.exporter.send(event);
+  }
+
+  async decision(consented: boolean, event: Extract<TelemetryEvent, { type: "decision_recorded" }>): Promise<void> {
+    if (consented) await this.exporter.send(event);
+  }
+
+  async flush(): Promise<void> {
+    await this.exporter.flush?.();
   }
 }
 

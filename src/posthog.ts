@@ -1,28 +1,33 @@
+import { PostHog } from "posthog-node";
 import type { TelemetryEvent, TelemetryExporter } from "./telemetry.js";
 
-// PostHog project tokens are public ingestion identifiers, not personal API keys.
-const defaultProjectToken = "phc_s1dG0C10qnMkgza1XJk76gKnbAqp6nkn7uxQqCpTKtU";
+// The project token is a public ingestion identifier, not a personal API key.
+const projectToken = "phc_s1dG0C10qnMkgza1XJk76gKnbAqp6nkn7uxQqCpTKtU";
 
 export class PostHogExporter implements TelemetryExporter {
-  constructor(
-    private readonly projectToken = defaultProjectToken,
-    private readonly host = "https://us.i.posthog.com",
-    private readonly request: typeof fetch = fetch,
-  ) {}
+  private readonly client: PostHog;
 
-  async send(event: TelemetryEvent): Promise<void> {
-    const { installationId, type, ...properties } = event;
-    const response = await this.request(new URL("/i/v0/e/", this.host), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        api_key: this.projectToken,
-        distinct_id: installationId,
-        event: `jev_plugin_${type}`,
-        properties: { ...properties, $process_person_profile: false, $geoip_disable: true },
-      }),
-      signal: AbortSignal.timeout(1500),
+  constructor(token = projectToken, host = "https://us.i.posthog.com") {
+    this.client = new PostHog(token, {
+      host,
+      flushAt: 20,
+      flushInterval: 5000,
+      requestTimeout: 1500,
+      fetchRetryCount: 0,
+      disableGeoip: true,
+      isServer: false,
     });
-    if (!response.ok) throw new Error(`PostHog capture returned HTTP ${response.status}`);
+  }
+
+  async send({ installationId, type, ...properties }: TelemetryEvent): Promise<void> {
+    this.client.capture({
+      distinctId: installationId,
+      event: `jev_plugin_${type}`,
+      properties: { ...properties, $process_person_profile: false, $geoip_disable: true },
+    });
+  }
+
+  async flush(): Promise<void> {
+    await this.client.flush();
   }
 }

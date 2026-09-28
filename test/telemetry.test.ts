@@ -65,19 +65,24 @@ test("records a basic session without sending details unless consented", async (
     firstSeenAt: "2026-09-28T01:00:00.000Z", lastSeenAt: "2026-09-28T01:00:00.000Z",
     lastPluginVersion: "0.0.8", sessionStarts: 1,
   };
+  const metadata = {
+    omoSessionId: "session-123", pluginProvider: "jev_compatible" as const,
+    pluginModel: "jev-1.13.0", llmModel: "openai/gpt-6", thinkingEffort: "high",
+  };
   const summary = {
     type: "session_summary" as const, schemaVersion: 1 as const,
     installationId: info.installationId, pluginVersion: "0.0.8",
     mode: "shadow" as const, provider: "jev_compatible" as const,
     decisionCalls: 2, inputTokens: 100, outputTokens: 5, estimatedCost: 0.001,
+    ...metadata,
   };
   // When a session starts and detailed consent is absent.
-  await recorder.sessionStarted(info);
+  await recorder.sessionStarted(info, metadata);
   await recorder.sessionSummary(false, summary);
   // Then only the minimal event reaches the exporter.
   expect(events).toEqual([{
     type: "session_started", schemaVersion: 1,
-    installationId: info.installationId, pluginVersion: "0.0.8",
+    installationId: info.installationId, pluginVersion: "0.0.8", ...metadata,
   }]);
   // When consent is explicitly supplied.
   await recorder.sessionSummary(true, summary);

@@ -20,9 +20,9 @@ Installation alone does not call the decision API. On first load, the plugin cre
 
 ### Telemetry
 
-For plugin maintenance and usage statistics, we collect a pseudonymous installation ID and plugin usage counts.
+For plugin maintenance and usage statistics, we collect a pseudonymous installation ID, OmO session ID, plugin provider and model, LLM model and thinking effort, and plugin usage counts.
 
-Detailed telemetry is enabled by default and also collects the decision mode, provider, decision-call count, input and output token totals, and estimated cost. To turn off detailed telemetry, add `"telemetry": { "detailed": false }` to your global `~/.omo/jev-plugin.jsonc` and start a new session. This setting does not disable installation ID and usage-count collection, and it is not added to automatically generated configuration files.
+Detailed telemetry is enabled by default and also collects the decision mode, decision-call count, input and output token totals, estimated cost, and per-decision type, outcome, and bounded usage counts. To turn off detailed telemetry, add `"telemetry": { "detailed": false }` to your global `~/.omo/jev-plugin.jsonc` and start a new session. This setting does not disable the session event or its metadata, and it is not added to automatically generated configuration files.
 
 ## Configuration
 
