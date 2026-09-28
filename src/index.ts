@@ -2,6 +2,7 @@ import { noticeEntryRenderer, type ExtensionAPI, type ExtensionContext } from "@
 import { z } from "zod";
 import { ConfigurationError, loadConfig, resolveApiKey, type PluginConfig } from "./config.js";
 import { JevDecider, redactText, type Candidate, type NextDecision } from "./decision.js";
+import { isSuccessfulCheck, replayShadow, shadowFeedbackSchema, type ShadowFeedback } from "./shadow.js";
 import { checkVersion, installedVersion } from "./update.js";
 import { addUsage, emptyUsage, formatUsage, usageEntrySchema, type UsageTotals } from "./usage.js";
 
@@ -96,7 +97,8 @@ export default function jevPlugin(pi: ExtensionAPI): void {
   let resultEpoch = 0;
   let turnUsage: UsageTotals = emptyUsage;
   let sessionUsage: UsageTotals = emptyUsage;
-  let shadowFeedback: { recommended: string; followed: boolean; succeeded?: boolean } | undefined;
+  let shadowFeedback: Omit<ShadowFeedback, "turnIndex"> | undefined;
+  let previousErrorTool: string | undefined;
   let lowProgressStreak = 0;
   let lastSuccessfulTool: string | undefined;
 
@@ -139,19 +141,30 @@ export default function jevPlugin(pi: ExtensionAPI): void {
   }));
 
   pi.registerEntryRenderer("jev:feedback", noticeEntryRenderer((entry) => {
-    const parsed = z.object({
-      turnIndex: z.number().int().nonnegative(),
-      recommended: z.string(),
-      followed: z.boolean(),
-      succeeded: z.boolean().optional(),
-    }).safeParse(entry.data);
+    const parsed = shadowFeedbackSchema.safeParse(entry.data);
     if (!parsed.success) return;
     return {
       title: `Jev shadow | turn ${parsed.data.turnIndex + 1}`,
-      why: `Suggested ${parsed.data.recommended} | ${parsed.data.followed
-        ? `used (${parsed.data.succeeded ? "success" : "error"})` : "not used"}`,
+      why: `Suggested ${parsed.data.recommended ?? "none"} | ${parsed.data.followed
+        ? `used (${parsed.data.succeeded ? "success" : "error"})` : "not used"} | calls=${parsed.data.toolCalls}`,
     };
   }));
+
+  pi.registerCommand("jev-shadow-report", {
+    description: "Replay observed shadow recommendations and tool results in this session",
+    handler: async (_args, ctx) => {
+      const report = replayShadow(ctx.sessionManager.getBranch());
+      ctx.ui.notify(
+        `Jev shadow replay: turns=${report.turns} | recommended=${report.recommended}`
+        + ` | followed=${report.followed} | first-result-success=${report.successful}`
+        + ` | successful-check-after-following=${report.checksAfterFollowed}`
+        + ` | first-tool-differences=${report.baselineDifferences}`
+        + ` | repeated-error-calls=${report.repeatedErrors}`
+        + " (observations only; not a causal comparison with act)",
+        "info",
+      );
+    },
+  });
 
   function canCall(): boolean {
     return Boolean(
@@ -172,6 +185,7 @@ export default function jevPlugin(pi: ExtensionAPI): void {
     callCount = 0;
     resultEpoch = 0;
     shadowFeedback = undefined;
+    previousErrorTool = undefined;
     lowProgressStreak = 0;
     lastSuccessfulTool = undefined;
     try {
@@ -225,6 +239,7 @@ export default function jevPlugin(pi: ExtensionAPI): void {
     callCount = 0;
     resultEpoch = 0;
     shadowFeedback = undefined;
+    previousErrorTool = undefined;
     lowProgressStreak = 0;
     lastSuccessfulTool = undefined;
   }, { previewSafe: true });
@@ -232,9 +247,18 @@ export default function jevPlugin(pi: ExtensionAPI): void {
   pi.on("tool_result", (event) => {
     if (!config?.enabled || config.mode === "off") return;
     lastSuccessfulTool = event.isError ? undefined : event.toolName;
-    if (shadowFeedback && !shadowFeedback.followed && event.toolName === shadowFeedback.recommended) {
-      shadowFeedback.followed = true;
-      shadowFeedback.succeeded = !event.isError;
+    if (shadowFeedback) {
+      shadowFeedback.toolCalls++;
+      shadowFeedback.firstTool ??= event.toolName;
+      if (event.isError && previousErrorTool === event.toolName) shadowFeedback.repeatedErrors++;
+      previousErrorTool = event.isError ? event.toolName : undefined;
+      if (!shadowFeedback.followed && event.toolName === shadowFeedback.recommended) {
+        shadowFeedback.followed = true;
+        shadowFeedback.succeeded = !event.isError;
+      }
+      if (shadowFeedback.followed && isSuccessfulCheck(event.toolName, event.input, event.isError)) {
+        shadowFeedback.checkSucceeded = true;
+      }
     }
     const snippet = (config.includeToolOutput || (event.isError && config.includeToolErrors))
       ? redactText(event.content
@@ -251,6 +275,7 @@ export default function jevPlugin(pi: ExtensionAPI): void {
   pi.on("turn_start", async (_event, ctx) => {
     advice = undefined;
     shadowFeedback = undefined;
+    previousErrorTool = undefined;
     if (!canCall() || !config || !decider) return;
     const active = new Set(pi.getActiveTools());
     const tools = pi.getAllTools()
@@ -289,7 +314,8 @@ export default function jevPlugin(pi: ExtensionAPI): void {
       });
       if (config.display.decisions) ctx.ui.notify(formatDecisionNotice({ kind: "turn", decision }), "info");
       if (config.mode === "shadow") {
-        if (decision.tool) shadowFeedback = { recommended: decision.tool, followed: false };
+        shadowFeedback = { ...(decision.tool ? { recommended: decision.tool } : {}),
+          followed: false, toolCalls: 0, repeatedErrors: 0, checkSucceeded: false };
         return;
       }
       lowProgressStreak = decision.progress !== undefined && decision.progress < 0.5
