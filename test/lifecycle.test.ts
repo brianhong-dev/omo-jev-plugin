@@ -347,6 +347,74 @@ test("records shadow recommendations against executed tool results", async () =>
   }
 });
 
+test("advises tool discovery only through an active tool_search", async () => {
+  // Given a discovery-only configuration with an active host search tool.
+  const cwd = await mkdtemp(join(tmpdir(), "omo-jev-discovery-"));
+  const server = Bun.serve({
+    port: 0,
+    fetch() {
+      return Response.json({
+        model: "jev-1.13.0",
+        answers: { discoverTools: { type: "noul", noul: 0.95 } },
+        usage: { input_tokens: 5, output_tokens: 2 },
+      });
+    },
+  });
+  try {
+    await mkdir(join(cwd, ".omo"));
+    await writeFile(join(cwd, ".omo", "jev-plugin.jsonc"), JSON.stringify({
+      mode: "advise", apiKey: "test-key", endpoint: `http://127.0.0.1:${server.port}`,
+      decisions: {
+        skills: false, nextAction: false, toolDiscovery: true, toolActivation: false,
+        toolPreflight: false, resultAssessment: false, loopDetection: false,
+        completion: false, modelRouting: false, thinkingLevel: false,
+      },
+    }));
+    const runtime = createExtensionRuntime();
+    const history: Array<{ type: string; data: unknown }> = [];
+    runtime.appendEntry = (type, data) => { history.push({ type, data }); };
+    runtime.getActiveTools = () => ["tool_search"];
+    runtime.getAllTools = () => [{
+      name: "tool_search", label: "Tool search", description: "Find another tool",
+      parameters: Type.Object({}),
+      sourceInfo: { path: "test", source: "test", scope: "system", origin: "top-level" },
+      exposure: "direct", searchKeywords: [], allowLazyActivation: false,
+    }];
+    const extension = await loadExtensionFromFactory(jevPlugin, cwd, createEventBus(), runtime);
+    const ctx = {
+      cwd, isProjectTrusted: () => true,
+      sessionManager: { getBranch: () => [] },
+      ui: { notify: () => {} },
+      modelRegistry: { getAvailable: () => [] },
+      signal: undefined,
+    };
+    const emit = async (name: string, event: object) => {
+      let result: unknown;
+      for (const handler of extension.handlers.get(name) ?? []) {
+        result = await Reflect.apply(handler, undefined, [event, ctx]);
+      }
+      return result;
+    };
+
+    // When a turn is evaluated and its advice is added to context.
+    await emit("session_start", { type: "session_start" });
+    await emit("before_agent_start", {
+      type: "before_agent_start", prompt: "Find a tool", systemPromptOptions: { skills: [] },
+    });
+    await emit("turn_start", { type: "turn_start", turnIndex: 0, timestamp: 0 });
+    const context = await emit("context", { type: "context", messages: [] });
+
+    // Then the separate discovery decision yields advice without selecting an execution tool.
+    expect(history.filter(({ type }) => type === "jev:decision").map(({ data }) => data))
+      .toEqual([{ kind: "turn", tool: undefined, discoverTools: true, skill: undefined,
+        model: undefined, looping: undefined, mode: "advise" }]);
+    expect(context).toHaveProperty("messages");
+  } finally {
+    server.stop(true);
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("suggests reconsideration only after consecutive low-progress judgments", async () => {
   // Given a Jev result assessor that observes little progress twice, then improvement.
   const cwd = await mkdtemp(join(tmpdir(), "omo-jev-progress-"));
