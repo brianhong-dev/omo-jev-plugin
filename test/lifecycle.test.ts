@@ -6,7 +6,91 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import jevPlugin from "../src/index.js";
+import { installedVersion } from "../src/update.js";
 import { usageEntrySchema } from "../src/usage.js";
+
+test("records an update card instead of a replaceable status or persistent widget", async () => {
+  const current = await installedVersion();
+  const latest = current.replace(/\d+$/, (patch) => String(Number(patch) + 1));
+  const originalFetch = globalThis.fetch;
+  const entries: Array<{ type: string; data: unknown }> = [];
+  const notices: string[] = [];
+  const widgets: string[] = [];
+  const renderers = new Map<string, (entry: { data: unknown }) => unknown>();
+  globalThis.fetch = Object.assign(
+    async (url: RequestInfo | URL, init?: RequestInit) => url === "https://registry.npmjs.org/omo-jev-plugin/latest"
+      ? Response.json({ version: latest })
+      : originalFetch(url, init),
+    { preconnect: originalFetch.preconnect },
+  );
+  try {
+    const handlers = new Map<string, (event: object, ctx: object) => Promise<void>>();
+    jevPlugin({
+      on: (name: string, handler: (event: object, ctx: object) => Promise<void>) => handlers.set(name, handler),
+      registerEntryRenderer: (name: string, renderer: (entry: { data: unknown }) => unknown) =>
+        renderers.set(name, renderer),
+      appendEntry: (type: string, data: unknown) => entries.push({ type, data }),
+    } as unknown as Parameters<typeof jevPlugin>[0]);
+    await handlers.get("session_start")?.({ type: "session_start" }, {
+      cwd: process.cwd(),
+      isProjectTrusted: () => false,
+      sessionManager: { getBranch: () => [] },
+      ui: {
+        notify: (message: string) => notices.push(message),
+        setWidget: (key: string) => widgets.push(key),
+      },
+    });
+
+    expect(entries).toContainEqual({
+      type: "jev:update",
+      data: { status: "update", current, available: latest },
+    });
+    const rendered = Reflect.apply(renderers.get("jev:update")!, undefined, [
+      { data: { status: "update", current, available: latest } }, { expanded: false }, getThemeByName("dark"),
+    ]) as { render(width: number): string[] };
+    expect(rendered.render(100).join(" ")).toContain(`omo-jev-plugin ${latest} is available`);
+    expect(rendered.render(100).join(" ")).toContain(`Installed: ${current}. Run omo update npm:omo-jev-plugin to update.`);
+    expect(notices.some((message) => message.includes(`${latest} is available`))).toBe(false);
+    expect(widgets).toEqual([]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("records a current-version card when the registry matches the installed version", async () => {
+  const current = await installedVersion();
+  const originalFetch = globalThis.fetch;
+  const entries: Array<{ type: string; data: unknown }> = [];
+  const renderers = new Map<string, (entry: { data: unknown }) => unknown>();
+  globalThis.fetch = Object.assign(
+    async (url: RequestInfo | URL, init?: RequestInit) => url === "https://registry.npmjs.org/omo-jev-plugin/latest"
+      ? Response.json({ version: current })
+      : originalFetch(url, init),
+    { preconnect: originalFetch.preconnect },
+  );
+  try {
+    const handlers = new Map<string, (event: object, ctx: object) => Promise<void>>();
+    jevPlugin({
+      on: (name: string, handler: (event: object, ctx: object) => Promise<void>) => handlers.set(name, handler),
+      registerEntryRenderer: (name: string, renderer: (entry: { data: unknown }) => unknown) =>
+        renderers.set(name, renderer),
+      appendEntry: (type: string, data: unknown) => entries.push({ type, data }),
+    } as unknown as Parameters<typeof jevPlugin>[0]);
+    await handlers.get("session_start")?.({ type: "session_start" }, {
+      cwd: process.cwd(),
+      isProjectTrusted: () => false,
+      sessionManager: { getBranch: () => [] },
+      ui: { notify: () => {} },
+    });
+    expect(entries).toContainEqual({ type: "jev:update", data: { status: "current", current } });
+    const rendered = Reflect.apply(renderers.get("jev:update")!, undefined, [
+      { data: { status: "current", current } }, { expanded: false }, getThemeByName("dark"),
+    ]) as { render(width: number): string[] };
+    expect(rendered.render(100).join(" ")).toContain(`omo-jev-plugin ${current} is up to date`);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
 
 test("records per-turn and session Jev usage in the UI history without a startup widget", async () => {
   // Given the host extension loader, two Jev responses, and a trusted local configuration.

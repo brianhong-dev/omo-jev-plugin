@@ -9,11 +9,11 @@ export async function installedVersion(): Promise<string> {
   return z.object({ version: versionSchema }).parse(manifest).version;
 }
 
-export async function newerVersion(
+export async function checkVersion(
   current: string,
   registryUrl = "https://registry.npmjs.org/omo-jev-plugin/latest",
   request: (url: string, init: RequestInit) => Promise<Response> = fetch,
-): Promise<string | undefined> {
+): Promise<{ status: "current" | "update"; version: string } | undefined> {
   try {
     const response = await request(registryUrl, { signal: AbortSignal.timeout(1500) });
     if (!response.ok) return;
@@ -24,9 +24,10 @@ export async function newerVersion(
       const available = latest[index];
       const local = installed[index];
       if (available === undefined || local === undefined) return;
-      if (available > local) return version;
-      if (available < local) return;
+      if (available > local) return { status: "update", version };
+      if (available < local) return { status: "current", version };
     }
+    return { status: "current", version };
   } catch (error) {
     if (error instanceof Error) return;
     throw error;

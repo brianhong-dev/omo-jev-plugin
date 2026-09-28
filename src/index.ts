@@ -2,7 +2,7 @@ import { noticeEntryRenderer, type ExtensionAPI, type ExtensionContext } from "@
 import { z } from "zod";
 import { ConfigurationError, loadConfig, resolveApiKey, type PluginConfig } from "./config.js";
 import { JevDecider, type Candidate, type NextDecision } from "./decision.js";
-import { installedVersion, newerVersion } from "./update.js";
+import { checkVersion, installedVersion } from "./update.js";
 import { addUsage, emptyUsage, formatUsage, usageEntrySchema, type UsageTotals } from "./usage.js";
 
 const thinkingSchema = z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
@@ -111,6 +111,24 @@ export default function jevPlugin(pi: ExtensionAPI): void {
     };
   }));
 
+  pi.registerEntryRenderer("jev:update", noticeEntryRenderer((entry) => {
+    const parsed = z.discriminatedUnion("status", [
+      z.object({ status: z.literal("current"), current: z.string() }),
+      z.object({ status: z.literal("update"), current: z.string(), available: z.string() }),
+    ]).safeParse(entry.data);
+    if (!parsed.success) return;
+    if (parsed.data.status === "current") {
+      return {
+        title: `omo-jev-plugin ${parsed.data.current} is up to date`,
+        why: "No update is available.",
+      };
+    }
+    return {
+      title: `omo-jev-plugin ${parsed.data.available} is available`,
+      why: `Installed: ${parsed.data.current}. Run omo update npm:omo-jev-plugin to update.`,
+    };
+  }));
+
   function canCall(): boolean {
     return Boolean(
       config && decider && config.enabled && config.mode !== "off"
@@ -131,12 +149,11 @@ export default function jevPlugin(pi: ExtensionAPI): void {
     resultEpoch = 0;
     try {
       const current = await installedVersion();
-      const available = await newerVersion(current);
-      if (available) {
-        ctx.ui.notify(
-          `omo-jev-plugin ${available} is available (installed: ${current}). Run omo update npm:omo-jev-plugin to update.`,
-          "info",
-        );
+      const result = await checkVersion(current);
+      if (result) {
+        pi.appendEntry("jev:update", result.status === "update"
+          ? { status: "update", current, available: result.version }
+          : { status: "current", current });
       }
     } catch (error) {
       if (!(error instanceof Error)) throw error;
