@@ -90,6 +90,7 @@ export default function jevPlugin(pi: ExtensionAPI): void {
   let resultEpoch = 0;
   let turnUsage: UsageTotals = emptyUsage;
   let sessionUsage: UsageTotals = emptyUsage;
+  let shadowFeedback: { recommended: string; followed: boolean; succeeded?: boolean } | undefined;
 
   function restoreUsage(ctx: ExtensionContext): void {
     sessionUsage = emptyUsage;
@@ -129,6 +130,21 @@ export default function jevPlugin(pi: ExtensionAPI): void {
     };
   }));
 
+  pi.registerEntryRenderer("jev:feedback", noticeEntryRenderer((entry) => {
+    const parsed = z.object({
+      turnIndex: z.number().int().nonnegative(),
+      recommended: z.string(),
+      followed: z.boolean(),
+      succeeded: z.boolean().optional(),
+    }).safeParse(entry.data);
+    if (!parsed.success) return;
+    return {
+      title: `Jev shadow | turn ${parsed.data.turnIndex + 1}`,
+      why: `Suggested ${parsed.data.recommended} | ${parsed.data.followed
+        ? `used (${parsed.data.succeeded ? "success" : "error"})` : "not used"}`,
+    };
+  }));
+
   function canCall(): boolean {
     return Boolean(
       config && decider && config.enabled && config.mode !== "off"
@@ -147,6 +163,7 @@ export default function jevPlugin(pi: ExtensionAPI): void {
     lastState = "";
     callCount = 0;
     resultEpoch = 0;
+    shadowFeedback = undefined;
     try {
       const current = await installedVersion();
       const result = await checkVersion(current);
@@ -197,10 +214,15 @@ export default function jevPlugin(pi: ExtensionAPI): void {
     lastState = "";
     callCount = 0;
     resultEpoch = 0;
+    shadowFeedback = undefined;
   }, { previewSafe: true });
 
   pi.on("tool_result", (event) => {
     if (!config?.enabled || config.mode === "off") return;
+    if (shadowFeedback && !shadowFeedback.followed && event.toolName === shadowFeedback.recommended) {
+      shadowFeedback.followed = true;
+      shadowFeedback.succeeded = !event.isError;
+    }
     const snippet = (config.includeToolOutput || (event.isError && config.includeToolErrors))
       ? event.content
         .filter((part) => part.type === "text")
@@ -215,6 +237,7 @@ export default function jevPlugin(pi: ExtensionAPI): void {
 
   pi.on("turn_start", async (_event, ctx) => {
     advice = undefined;
+    shadowFeedback = undefined;
     if (!canCall() || !config || !decider) return;
     const active = new Set(pi.getActiveTools());
     const tools = pi.getAllTools()
@@ -253,7 +276,10 @@ export default function jevPlugin(pi: ExtensionAPI): void {
         mode: config.mode,
       });
       if (config.display.decisions) ctx.ui.notify(formatDecisionNotice({ kind: "turn", decision }), "info");
-      if (config.mode === "shadow") return;
+      if (config.mode === "shadow") {
+        if (decision.tool) shadowFeedback = { recommended: decision.tool, followed: false };
+        return;
+      }
       advice = formatAdvice(decision);
       if (config.mode !== "act") return;
       if (config.decisions.toolActivation && decision.tool
@@ -284,6 +310,10 @@ export default function jevPlugin(pi: ExtensionAPI): void {
   });
 
   pi.on("turn_end", (event) => {
+    if (config?.mode === "shadow" && shadowFeedback) {
+      pi.appendEntry("jev:feedback", { turnIndex: event.turnIndex, ...shadowFeedback });
+      shadowFeedback = undefined;
+    }
     if (!decider) return;
     pi.appendEntry("jev:usage", { turnIndex: event.turnIndex, turn: turnUsage, session: sessionUsage });
     turnUsage = emptyUsage;
