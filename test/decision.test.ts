@@ -30,6 +30,7 @@ function config(): PluginConfig {
     models: [],
     activatableTools: [],
     display: { startup: true, decisions: false },
+    telemetry: { detailed: true },
     decisions: {
       skills: false, nextAction: true, toolDiscovery: false, toolActivation: false,
       toolPreflight: false, resultAssessment: false, loopDetection: false,

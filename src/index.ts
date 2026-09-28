@@ -7,6 +7,8 @@ import { JevDecider, redactText, type Candidate, type NextDecision } from "./dec
 import { requirementsFromRequest, verificationKind, type VerificationResult } from "./evidence.js";
 import { classifyFailure, planRecovery, type Attempt, type FailureKind, type RecoveryPlan } from "./recovery.js";
 import { isSuccessfulCheck, replayShadow, shadowFeedbackSchema, type ShadowFeedback } from "./shadow.js";
+import { PostHogExporter } from "./posthog.js";
+import { TelemetryRecorder, updateInstallationInfo, type InstallationInfo, type TelemetryExporter } from "./telemetry.js";
 import { checkVersion, installedVersion } from "./update.js";
 import { addUsage, emptyUsage, formatUsage, usageEntrySchema, type UsageTotals } from "./usage.js";
 
@@ -121,7 +123,10 @@ export function formatDecisionNotice(
   ].join(" | ");
 }
 
-export default function jevPlugin(pi: ExtensionAPI): void {
+export default function jevPlugin(pi: ExtensionAPI, exporter: TelemetryExporter = new PostHogExporter()): void {
+  const telemetry = new TelemetryRecorder(exporter);
+  let installationInfo: InstallationInfo | undefined;
+  let sessionCalls = 0;
   let config: PluginConfig | undefined;
   let decider: JevDecider | undefined;
   let request = "";
@@ -215,6 +220,8 @@ export default function jevPlugin(pi: ExtensionAPI): void {
   }
 
   pi.on("session_start", async (_event, ctx) => {
+    installationInfo = undefined;
+    sessionCalls = 0;
     restoreUsage(ctx);
     config = undefined;
     decider = undefined;
@@ -232,6 +239,19 @@ export default function jevPlugin(pi: ExtensionAPI): void {
     requirementsTruncated = false;
     verificationResults = [];
     recentAttempts = [];
+    try {
+      const version = await installedVersion();
+      const info = await updateInstallationInfo(version);
+      installationInfo = info;
+      try {
+        await telemetry.sessionStarted(info);
+      } catch (error) {
+        if (!(error instanceof Error)) throw error;
+      }
+    } catch (error) {
+      if (!(error instanceof Error)) throw error;
+      ctx.ui.notify(`Jev installation information unavailable: ${error.message}`, "warning");
+    }
     try {
       const current = await installedVersion();
       const result = await checkVersion(current);
@@ -253,7 +273,7 @@ export default function jevPlugin(pi: ExtensionAPI): void {
         decider = new JevDecider(config, undefined, (usage, model) => {
           turnUsage = addUsage(turnUsage, usage, model);
           sessionUsage = addUsage(sessionUsage, usage, model);
-        }, () => { callCount++; });
+        }, () => { callCount++; sessionCalls++; });
       }
       if (decider && config.experimentalCodeSearch && ctx.isProjectTrusted()) {
         if (!searchRegistered) {
@@ -497,6 +517,7 @@ export default function jevPlugin(pi: ExtensionAPI): void {
   pi.on("tool_call", async (event, ctx) => {
     if (!canCall() || !config?.decisions.toolPreflight || !decider) return;
     callCount++;
+    sessionCalls++;
     try {
       const risk = await decider.risk(request, event.toolName, event.input, ctx.signal);
       const blocked = risk >= config.thresholds.risk;
@@ -516,7 +537,23 @@ export default function jevPlugin(pi: ExtensionAPI): void {
     }
   });
 
-  pi.on("session_shutdown", () => {
+  pi.on("session_shutdown", async () => {
+    if (installationInfo && config?.telemetry.detailed) {
+      try {
+        await telemetry.sessionSummary(true, {
+          type: "session_summary", schemaVersion: 1,
+          installationId: installationInfo.installationId,
+          pluginVersion: installationInfo.lastPluginVersion,
+          mode: config.mode, provider: config.provider.selected,
+          decisionCalls: sessionCalls,
+          inputTokens: sessionUsage.inputTokens,
+          outputTokens: sessionUsage.outputTokens,
+          estimatedCost: sessionUsage.estimatedCost,
+        });
+      } catch (error) {
+        if (!(error instanceof Error)) throw error;
+      }
+    }
     decider = undefined;
     advice = undefined;
   });

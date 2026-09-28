@@ -70,6 +70,7 @@ const configSchema = z.strictObject({
   activatableTools: z.array(z.string().min(1)).max(254).default([]),
   decisions: decisionsSchema.prefault({}),
   display: displaySchema.prefault({}),
+  telemetry: z.strictObject({ detailed: z.boolean().default(true) }).prefault({}),
   limits: z.strictObject({
     timeoutMs: z.number().int().min(100).max(30_000).default(1_000),
     spanTimeoutMs: z.number().int().min(100).max(30_000).default(10_000),
@@ -147,6 +148,7 @@ async function readConfig(path: string, migrateDefaults = false): Promise<Config
       startup: z.boolean().optional(),
       decisions: z.boolean().optional(),
     }).optional(),
+    telemetry: z.strictObject({ detailed: z.boolean().optional() }).optional(),
     limits: z.strictObject({
       timeoutMs: z.number().int().min(100).max(30_000).optional(),
       spanTimeoutMs: z.number().int().min(100).max(30_000).optional(),
@@ -167,6 +169,9 @@ async function readConfig(path: string, migrateDefaults = false): Promise<Config
     _migrations: z.array(z.string()).optional(),
   }).safeParse(value);
   if (!result.success) throw new ConfigurationError(path, z.prettifyError(result.error));
+  if (!migrateDefaults && result.data.telemetry !== undefined) {
+    throw new ConfigurationError(path, "Telemetry consent can only be set in the global configuration");
+  }
   const { _migrations: history, model, endpoint, apiKey, openrouterApiKey, ...settings } = result.data;
   const legacy = model !== undefined || endpoint !== undefined
     || apiKey !== undefined || openrouterApiKey !== undefined;
@@ -207,6 +212,7 @@ async function readConfig(path: string, migrateDefaults = false): Promise<Config
       migrated = applyEdits(migrated, modify(migrated, ["provider"], migratedSettings.provider, { formattingOptions }));
     }
     for (const [key, defaultValue] of Object.entries(defaults)) {
+      if (key === "telemetry") continue;
       const current = Object.entries(migratedSettings).find(([name]) => name === key)?.[1];
       if (current === undefined) {
         migrated = applyEdits(migrated, modify(migrated, [key], defaultValue, { formattingOptions }));
@@ -276,7 +282,8 @@ export async function loadConfig(
   if (!global) {
     await mkdir(dirname(globalPath), { recursive: true });
     try {
-      await writeFile(globalPath, `${JSON.stringify(configSchema.parse({}), null, 2)}\n`, {
+      const { telemetry: _telemetry, ...defaults } = configSchema.parse({});
+      await writeFile(globalPath, `${JSON.stringify(defaults, null, 2)}\n`, {
         encoding: "utf8",
         flag: "wx",
         mode: 0o600,
@@ -298,6 +305,7 @@ export async function loadConfig(
     },
     decisions: { ...global?.decisions, ...local?.decisions },
     display: { ...global?.display, ...local?.display },
+    telemetry: global?.telemetry,
     limits: { ...global?.limits, ...local?.limits },
     thresholds: { ...global?.thresholds, ...local?.thresholds },
   });
