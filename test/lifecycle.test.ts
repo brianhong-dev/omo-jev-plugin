@@ -113,8 +113,8 @@ test("records per-turn and session Jev usage in the UI history without a startup
     await writeFile(join(cwd, ".omo", "jev-plugin.jsonc"), JSON.stringify({
       enabled: true,
       mode: "shadow",
-      apiKey: "local-test-key",
-      endpoint: `http://127.0.0.1:${server.port}`,
+      provider: { selected: "jev_compatible",
+        jev_compatible: { apiKey: "local-test-key", endpoint: `http://127.0.0.1:${server.port}` } },
       display: { startup: true, decisions: false },
       decisions: {
         skills: false, nextAction: false, toolDiscovery: false, toolActivation: false,
@@ -203,7 +203,8 @@ test("sends bounded failed-tool evidence while keeping successful output private
   try {
     await mkdir(join(cwd, ".omo"));
     await writeFile(join(cwd, ".omo", "jev-plugin.jsonc"), JSON.stringify({
-      mode: "shadow", apiKey: "test-key", endpoint: `http://127.0.0.1:${server.port}`,
+      mode: "shadow", provider: { selected: "jev_compatible",
+        jev_compatible: { apiKey: "test-key", endpoint: `http://127.0.0.1:${server.port}` } },
       includeToolErrors: true, limits: { stateChars: 100 }, redactValues: ["SECRET456"],
       decisions: {
         skills: false, nextAction: false, toolDiscovery: false, toolActivation: false,
@@ -274,7 +275,8 @@ test("records shadow recommendations against executed tool results", async () =>
   try {
     await mkdir(join(cwd, ".omo"));
     await writeFile(join(cwd, ".omo", "jev-plugin.jsonc"), JSON.stringify({
-      mode: "shadow", apiKey: "test-key", endpoint: `http://127.0.0.1:${server.port}`,
+      mode: "shadow", provider: { selected: "jev_compatible",
+        jev_compatible: { apiKey: "test-key", endpoint: `http://127.0.0.1:${server.port}` } },
       decisions: {
         skills: false, nextAction: true, toolDiscovery: false, toolActivation: false,
         toolPreflight: false, resultAssessment: false, loopDetection: false,
@@ -363,7 +365,8 @@ test("advises tool discovery only through an active tool_search", async () => {
   try {
     await mkdir(join(cwd, ".omo"));
     await writeFile(join(cwd, ".omo", "jev-plugin.jsonc"), JSON.stringify({
-      mode: "advise", apiKey: "test-key", endpoint: `http://127.0.0.1:${server.port}`,
+      mode: "advise", provider: { selected: "jev_compatible",
+        jev_compatible: { apiKey: "test-key", endpoint: `http://127.0.0.1:${server.port}` } },
       decisions: {
         skills: false, nextAction: false, toolDiscovery: true, toolActivation: false,
         toolPreflight: false, resultAssessment: false, loopDetection: false,
@@ -438,7 +441,8 @@ test("suggests reconsideration only after consecutive low-progress judgments", a
   try {
     await mkdir(join(cwd, ".omo"));
     await writeFile(join(cwd, ".omo", "jev-plugin.jsonc"), JSON.stringify({
-      mode: "advise", apiKey: "test-key", endpoint: `http://127.0.0.1:${server.port}`,
+      mode: "advise", provider: { selected: "jev_compatible",
+        jev_compatible: { apiKey: "test-key", endpoint: `http://127.0.0.1:${server.port}` } },
       decisions: {
         skills: false, nextAction: false, toolDiscovery: false, toolActivation: false,
         toolPreflight: false, resultAssessment: true, loopDetection: false,
@@ -530,7 +534,8 @@ test("maps successful checks to requirements before qualifying completion", asyn
   try {
     await mkdir(join(cwd, ".omo"));
     await writeFile(join(cwd, ".omo", "jev-plugin.jsonc"), JSON.stringify({
-      mode: "advise", apiKey: "test-key", endpoint: `http://127.0.0.1:${server.port}`,
+      mode: "advise", provider: { selected: "jev_compatible",
+        jev_compatible: { apiKey: "test-key", endpoint: `http://127.0.0.1:${server.port}` } },
       decisions: {
         skills: false, nextAction: false, toolDiscovery: false, toolActivation: false,
         toolPreflight: false, resultAssessment: false, loopDetection: false,
@@ -616,7 +621,8 @@ test("maps an opted-in successful HTTP check without persisting response text", 
   try {
     await mkdir(join(cwd, ".omo"));
     await writeFile(join(cwd, ".omo", "jev-plugin.jsonc"), JSON.stringify({
-      mode: "shadow", apiKey: "test-key", endpoint: `http://127.0.0.1:${server.port}`,
+      mode: "shadow", provider: { selected: "jev_compatible",
+        jev_compatible: { apiKey: "test-key", endpoint: `http://127.0.0.1:${server.port}` } },
       includeToolOutput: true,
       decisions: {
         skills: false, nextAction: false, toolDiscovery: false, toolActivation: false,
@@ -686,7 +692,8 @@ test("keeps the final Jev call for a later verified result", async () => {
   try {
     await mkdir(join(cwd, ".omo"));
     await writeFile(join(cwd, ".omo", "jev-plugin.jsonc"), JSON.stringify({
-      mode: "shadow", apiKey: "test-key", endpoint: `http://127.0.0.1:${server.port}`,
+      mode: "shadow", provider: { selected: "jev_compatible",
+        jev_compatible: { apiKey: "test-key", endpoint: `http://127.0.0.1:${server.port}` } },
       limits: { maxCallsPerAgentRun: 1 },
       decisions: {
         skills: false, nextAction: false, toolDiscovery: false, toolActivation: false,

@@ -25,7 +25,7 @@ function config(): PluginConfig {
   return {
     enabled: true,
     mode: "advise",
-    model: "jev-1.13.0",
+    provider: { selected: "jev_compatible", jev_compatible: {}, "respan-ai": {} },
     models: [],
     activatableTools: [],
     display: { startup: true, decisions: false },
@@ -34,7 +34,7 @@ function config(): PluginConfig {
       toolPreflight: false, resultAssessment: false, loopDetection: false,
       completion: false, modelRouting: false, thinkingLevel: false,
     },
-    limits: { timeoutMs: 1000, maxCallsPerAgentRun: 30, stateChars: 2000 },
+    limits: { timeoutMs: 1000, spanTimeoutMs: 10000, maxCallsPerAgentRun: 30, stateChars: 2000 },
     thresholds: { fit: 0.6, confidence: 0.65, risk: 0.8 },
     includeToolOutput: false,
     includeToolErrors: false,
@@ -104,14 +104,176 @@ test("sends the configured key to the configured endpoint", async () => {
     },
   });
   const configured = config();
-  configured.apiKey = "configured-key";
-  configured.endpoint = `http://127.0.0.1:${server.port}`;
+  configured.provider.jev_compatible.apiKey = "configured-key";
+  configured.provider.jev_compatible.endpoint = `http://127.0.0.1:${server.port}`;
   try {
     // When the production client makes a decision.
     const result = await new JevDecider(configured).next(state);
     // Then the request reached that endpoint with the configured key.
     expect(result.tool).toBe("read");
     expect(received).toEqual(["Bearer configured-key"]);
+  } finally {
+    server.stop(true);
+  }
+});
+
+for (const model of ["respan/span-01", "respan/span-01-lite"]) {
+  test(`routes ${model} through OpenRouter decisions with the configured key`, async () => {
+    // Given a local OpenRouter-compatible endpoint and a typed answer.
+    const requests: { path: string; key: string; body: unknown }[] = [];
+    const server = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        const body = await req.json();
+        if (typeof body.state !== "string" || Object.values(body.questions).some((entry) => {
+          const question: unknown = entry;
+          if (!question || typeof question !== "object" || !("type" in question)
+            || !("instructions" in question) || question.type !== "noul"
+            || typeof question.instructions !== "string") return true;
+          if (!("criteria" in question) || question.criteria == null) return false;
+          const criteria: unknown = question.criteria;
+          return !criteria || typeof criteria !== "object" || !("true" in criteria) || !("false" in criteria)
+            || typeof criteria.true !== "string" || typeof criteria.false !== "string";
+        })) {
+          return Response.json({ error: "Respan accepts only string state and plain-string noul questions" },
+            { status: 400 });
+        }
+        requests.push({
+          path: new URL(req.url).pathname,
+          key: req.headers.get("authorization") ?? "",
+          body,
+        });
+        const answers = Object.fromEntries(Object.keys(body.questions).map((name) => [name, {
+          type: "noul",
+          noul: name === "tool__0" ? 0.05 : name === "tool__1" ? 0.95
+            : name === "progress__0" ? 0.2 : name === "progress__1" || name === "progress__2" ? 0.4
+              : name === "outsideScope" ? 0.1 : 0.9,
+        }]));
+        return Response.json({
+          model: `${model}-20260925`,
+          answers,
+          usage: { input_tokens: 51, output_tokens: 0, cost: 0 },
+        });
+      },
+    });
+    const selected = config();
+    selected.provider.selected = "respan-ai";
+    selected.provider.jev_compatible.apiKey = "typesafe-key";
+    selected.provider["respan-ai"].model = model;
+    selected.provider["respan-ai"].apiKey = "openrouter-key";
+    selected.provider["respan-ai"].endpoint = `http://127.0.0.1:${server.port}`;
+    selected.decisions.resultAssessment = true;
+    try {
+      // When the real plugin transport handles a turn and a preflight call.
+      const decider = new JevDecider(selected);
+      const result = await decider.next({ ...state, lastResults: ["read: success"] });
+      const risk = await decider.risk("Inspect source", "read", { path: "a.ts" });
+      // Then both requests reach the Decisions endpoint and preserve the selected model.
+      expect(result.tool).toBe("read");
+      expect(result.progress).toBeCloseTo(1.2);
+      expect(risk).toBe(0.1);
+      expect(requests).toHaveLength(2);
+      expect(requests.map(({ path }) => path)).toEqual(["/api/alpha/decisions", "/api/alpha/decisions"]);
+      expect(requests.map(({ key }) => key)).toEqual(["Bearer openrouter-key", "Bearer openrouter-key"]);
+      expect(requests.map(({ body }) => body && typeof body === "object" && "model" in body
+        ? body.model : undefined)).toEqual([model, model]);
+      expect(requests[0]?.body).toMatchObject({
+        state: JSON.stringify({ request: state.request, lastResults: ["read: success"] }),
+      });
+      expect(requests[0]?.body).toMatchObject({
+        questions: {
+          tool__0: { type: "noul" },
+          tool__1: { type: "noul" },
+          progress__0: { type: "noul" },
+          progress__1: { type: "noul" },
+          progress__2: { type: "noul" },
+          toolFits: { type: "noul" },
+        },
+      });
+    } finally {
+      server.stop(true);
+    }
+  });
+}
+
+test("routes a custom Respan model ID by provider rather than its name", async () => {
+  // Given an ID without the respan/ prefix, served through the Respan provider.
+  const requests: Array<{ path: string; model: string; type: string }> = [];
+  const server = Bun.serve({
+    port: 0,
+    async fetch(req) {
+      const body = await req.json();
+      requests.push({
+        path: new URL(req.url).pathname, model: body.model, type: body.questions.outsideScope.type,
+      });
+      return Response.json({
+        model: body.model, answers: { outsideScope: { type: "noul", noul: 0.2 } },
+        usage: { input_tokens: 5, output_tokens: 0 },
+      });
+    },
+  });
+  const selected = config();
+  selected.provider.selected = "respan-ai";
+  selected.provider["respan-ai"].model = "custom/respan-scorer";
+  selected.provider["respan-ai"].apiKey = "openrouter-key";
+  selected.provider["respan-ai"].endpoint = `http://127.0.0.1:${server.port}`;
+  try {
+    // When a preflight question is scored.
+    const risk = await new JevDecider(selected).risk("Inspect", "read", { path: "src/config.ts" });
+    // Then the provider controls transport while the model ID is sent unchanged.
+    expect(risk).toBe(0.2);
+    expect(requests).toEqual([{
+      path: "/api/alpha/decisions", model: "custom/respan-scorer", type: "noul",
+    }]);
+  } finally {
+    server.stop(true);
+  }
+});
+
+test("does not turn an OpenRouter refusal into a tool recommendation", async () => {
+  // Given a Decisions endpoint rejecting a request.
+  const server = Bun.serve({
+    port: 0,
+    fetch: () => Response.json({ error: { message: "Rate limit exceeded" } }, { status: 429 }),
+  });
+  const selected = config();
+  selected.provider.selected = "respan-ai";
+  selected.provider["respan-ai"].apiKey = "openrouter-key";
+  selected.provider["respan-ai"].endpoint = `http://127.0.0.1:${server.port}`;
+  try {
+    // When a turn asks the selected model for a decision.
+    const result = new JevDecider(selected).next(state);
+    // Then the request fails explicitly instead of returning a fabricated decision.
+    await expect(result).rejects.toMatchObject({ status: 429 });
+  } finally {
+    server.stop(true);
+  }
+});
+
+test("does not recommend a Span choice below the confidence threshold", async () => {
+  // Given independently scored candidates with a weak winning probability.
+  const server = Bun.serve({
+    port: 0,
+    async fetch(req) {
+      const body = await req.json();
+      return Response.json({
+        model: "respan/span-01-lite-20260925",
+        answers: Object.fromEntries(Object.keys(body.questions).map((name) => [name, {
+          type: "noul", noul: name === "tool__0" ? 0.45 : name === "tool__1" ? 0.55 : 0.9,
+        }])),
+        usage: { input_tokens: 20, output_tokens: 0 },
+      });
+    },
+  });
+  const selected = config();
+  selected.provider.selected = "respan-ai";
+  selected.provider["respan-ai"].apiKey = "openrouter-key";
+  selected.provider["respan-ai"].endpoint = `http://127.0.0.1:${server.port}`;
+  try {
+    // When the choice is evaluated through the Decisions endpoint.
+    const result = await new JevDecider(selected).next(state);
+    // Then the local confidence threshold still prevents the recommendation.
+    expect(result.tool).toBeUndefined();
   } finally {
     server.stop(true);
   }

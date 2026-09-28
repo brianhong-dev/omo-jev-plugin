@@ -3,7 +3,7 @@ import { chmod, mkdtemp, mkdir, readFile, readdir, rm, stat, symlink, writeFile 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse } from "jsonc-parser";
-import { ConfigurationError, loadConfig, resolveApiKey } from "../src/config.js";
+import { ConfigurationError, decisionModel, loadConfig, resolveApiKey } from "../src/config.js";
 import { formatDecisionNotice, startupNotice } from "../src/index.js";
 
 const dirs: string[] = [];
@@ -97,8 +97,8 @@ test("keeps the original API key bytes when validating a migrated config", async
   // When defaults are migrated.
   const config = await loadConfig(cwd, false, globalPath);
   // Then the stored key is not silently normalized by the migration.
-  expect(config.apiKey).toBe("secret");
-  expect(parse(await readFile(globalPath, "utf8")).apiKey).toBe(" secret ");
+  expect(config.provider.jev_compatible.apiKey).toBe("secret");
+  expect(parse(await readFile(globalPath, "utf8")).provider.jev_compatible.apiKey).toBe("secret");
 });
 test("keeps trusted project overrides sparse after global migration", async () => {
   // Given a partial project override and an older global configuration.
@@ -121,7 +121,7 @@ test("resolves a configured key before the environment key", async () => {
   const config = await loadConfig(cwd, false, globalPath);
   // Then the file key and endpoint take precedence.
   expect(resolveApiKey(config, { TYPESAFE_API_KEY: "env-key" })).toBe("file-key");
-  expect(config.endpoint).toBe("https://jev.example.test");
+  expect(config.provider.jev_compatible.endpoint).toBe("https://jev.example.test");
 });
 
 test("uses environment key when the file has none", async () => {
@@ -133,6 +133,107 @@ test("uses environment key when the file has none", async () => {
   // Then whitespace is trimmed and an empty key stays missing.
   expect(resolveApiKey(config, { TYPESAFE_API_KEY: " env-key " })).toBe("env-key");
   expect(resolveApiKey(config, { TYPESAFE_API_KEY: " " })).toBeUndefined();
+});
+
+test("selects the OpenRouter key for a configured Span-01 tier", async () => {
+  // Given a trusted project selecting Lite over the global Jev default.
+  const { cwd, globalPath, projectPath } = await fixture();
+  await writeFile(globalPath, '{ "mode": "advise", "provider": { "jev_compatible": { "apiKey": "typesafe-file-key" }, "respan-ai": { "apiKey": "openrouter-file-key" } } }');
+  await writeFile(projectPath, '{ "provider": { "selected": "respan-ai" } }');
+  // When the effective configuration resolves credentials.
+  const config = await loadConfig(cwd, true, globalPath);
+  // Then switching models never sends the TypeSafe key to OpenRouter.
+  expect(resolveApiKey(config, {
+    TYPESAFE_API_KEY: "typesafe-key", OPENROUTER_API_KEY: "openrouter-key",
+  })).toBe("openrouter-file-key");
+  expect(resolveApiKey({ ...config, provider: { ...config.provider, selected: "jev_compatible" } }, {}))
+    .toBe("typesafe-file-key");
+  expect(startupNotice(config, {})?.options?.keySource).toBe("file");
+});
+
+test("keeps provider model IDs configurable without changing transport selection", async () => {
+  // Given custom IDs under both providers and a project selecting Respan.
+  const { cwd, globalPath, projectPath } = await fixture();
+  await writeFile(globalPath, JSON.stringify({
+    provider: {
+      selected: "jev_compatible",
+      jev_compatible: { model: "typesafe/jev-next", apiKey: "jev-key" },
+      "respan-ai": { model: "respan/span-01", apiKey: "respan-key" },
+    },
+  }));
+  await writeFile(projectPath, '{ "provider": { "selected": "respan-ai" } }');
+  // When the trusted project is loaded and the selected provider changes.
+  const config = await loadConfig(cwd, true, globalPath);
+  // Then each provider retains its own ID and credentials.
+  expect(decisionModel(config)).toBe("respan/span-01");
+  expect(resolveApiKey(config, {})).toBe("respan-key");
+  const jev = { ...config, provider: { ...config.provider, selected: "jev_compatible" as const } };
+  expect(decisionModel(jev)).toBe("typesafe/jev-next");
+  expect(resolveApiKey(jev, {})).toBe("jev-key");
+});
+
+test("migrates legacy provider credentials and model without changing the selected tier", async () => {
+  // Given a global configuration already migrated for earlier defaults.
+  const { cwd, globalPath } = await fixture();
+  await writeFile(globalPath, JSON.stringify({
+    mode: "shadow", model: "respan/span-01", apiKey: "jev-key", openrouterApiKey: "respan-key",
+    endpoint: "https://openrouter.ai", _migrations: ["jev-defaults-v1"],
+  }));
+  // When the provider schema migration runs.
+  const config = await loadConfig(cwd, false, globalPath);
+  // Then it preserves the selected model, both keys, endpoint, and a backup.
+  expect(config.provider.selected).toBe("respan-ai");
+  expect(decisionModel(config)).toBe("respan/span-01");
+  expect(config.provider.jev_compatible.apiKey).toBe("jev-key");
+  expect(config.provider["respan-ai"]).toMatchObject({
+    apiKey: "respan-key", endpoint: "https://openrouter.ai",
+  });
+  const persisted = parse(await readFile(globalPath, "utf8"));
+  expect(persisted).not.toHaveProperty("model");
+  expect(persisted).not.toHaveProperty("apiKey");
+  expect(persisted).not.toHaveProperty("openrouterApiKey");
+  expect(persisted).not.toHaveProperty("endpoint");
+  expect(persisted._migrations).toEqual(["jev-defaults-v1"]);
+  expect((await readdir(cwd)).filter((entry) => entry.startsWith("global.jsonc.bak."))).toHaveLength(1);
+});
+
+test("does not fall back to the Jev key when Span-01 has no key", async () => {
+  // Given a Jev file key and a Span-01 project override without an OpenRouter key.
+  const { cwd, globalPath, projectPath } = await fixture();
+  await writeFile(globalPath, '{ "provider": { "jev_compatible": { "apiKey": "typesafe-file-key" } } }');
+  await writeFile(projectPath, '{ "provider": { "selected": "respan-ai" } }');
+  // When the effective configuration resolves credentials.
+  const config = await loadConfig(cwd, true, globalPath);
+  // Then only the appropriate OpenRouter environment key can enable it.
+  expect(resolveApiKey(config, { TYPESAFE_API_KEY: "typesafe-key" })).toBeUndefined();
+  expect(resolveApiKey(config, { OPENROUTER_API_KEY: " openrouter-key " })).toBe("openrouter-key");
+  expect(startupNotice(config, {})?.message).toContain("provider.respan-ai.apiKey");
+});
+
+test("accepts an empty OpenRouter key slot without changing Jev authentication", async () => {
+  // Given a migrated global configuration awaiting an OpenRouter key.
+  const { cwd, globalPath } = await fixture();
+  await writeFile(globalPath, '{ "provider": { "jev_compatible": { "apiKey": "typesafe-file-key" }, "respan-ai": { "apiKey": "" } } }');
+  // When both providers resolve credentials from the same file.
+  const config = await loadConfig(cwd, false, globalPath);
+  // Then Jev keeps its key and Span uses only its own key or environment fallback.
+  expect(resolveApiKey(config, {})).toBe("typesafe-file-key");
+  expect(resolveApiKey({ ...config, provider: { ...config.provider, selected: "respan-ai" } }, {}))
+    .toBeUndefined();
+  expect(resolveApiKey({ ...config, provider: { ...config.provider, selected: "respan-ai" } }, {
+    OPENROUTER_API_KEY: "environment-key",
+  })).toBe("environment-key");
+});
+
+test("names the selected model's missing API key at startup", async () => {
+  // Given a Span-01 configuration with no OpenRouter credential.
+  const { cwd, globalPath } = await fixture();
+  await writeFile(globalPath, '{ "mode": "advise", "provider": { "selected": "respan-ai" } }');
+  // When the host formats the startup notice.
+  const notice = startupNotice(await loadConfig(cwd, false, globalPath), {});
+  // Then the operator is directed to the right credential.
+  expect(notice?.message).toContain("OPENROUTER_API_KEY");
+  expect(notice?.message).not.toContain("TYPESAFE_API_KEY");
 });
 
 test("reports enabled options without exposing the configured key", async () => {

@@ -1,7 +1,7 @@
 import { TypeSafeClient, type Questions, type Usage } from "@typesafe-ai/sdk";
 import { readFile } from "node:fs/promises";
 import { z } from "zod";
-import { resolveApiKey, type PluginConfig } from "./config.js";
+import { decisionModel, resolveApiKey, type PluginConfig } from "./config.js";
 import type { VerificationResult } from "./evidence.js";
 import type { Attempt } from "./recovery.js";
 
@@ -47,7 +47,7 @@ const probability = z.number().min(0).max(1);
 const choiceAnswer = z.object({
   type: z.literal("choice"),
   choice: z.string(),
-  confidence: probability,
+  confidence: probability.optional(),
   probabilities: z.record(z.string(), probability),
 });
 const noulAnswer = z.object({ type: z.literal("noul"), noul: probability });
@@ -58,8 +58,15 @@ const responseSchema = z.object({
   usage: z.object({
     input_tokens: z.number().int().nonnegative(),
     output_tokens: z.number().int().nonnegative(),
+    cost: z.number().nonnegative().optional(),
   }),
 });
+
+class DecisionHTTPError extends Error {
+  constructor(readonly status: number) {
+    super(`OpenRouter decisions request failed with HTTP ${status}`);
+  }
+}
 
 export type NextDecision = {
   readonly tool?: string;
@@ -88,11 +95,12 @@ function select(
   const result = choiceAnswer.safeParse(answers[key]);
   const fit = noulAnswer.safeParse(answers[`${key}Fits`]);
   if (!result.success || !fit.success) return;
-  const { choice, confidence, probabilities } = result.data;
+  const { choice, probabilities } = result.data;
   const matching = candidates.filter(({ name }) => redactText(name, config) === choice);
   if (choice === "__none__" || matching.length !== 1) return;
-  if (confidence < config.thresholds.confidence || fit.data.noul < config.thresholds.fit) return;
-  if (probabilities[choice] === undefined) return;
+  const selectedProbability = probabilities[choice];
+  if (selectedProbability === undefined || (result.data.confidence ?? selectedProbability) < config.thresholds.confidence
+    || fit.data.noul < config.thresholds.fit) return;
   return matching[0]?.name;
 }
 
@@ -112,23 +120,94 @@ function addChoice(questions: Questions, key: string, candidates: readonly Candi
 }
 
 export class JevDecider {
-  private readonly client: TypeSafeClient;
+  private readonly client: TypeSafeClient | undefined;
 
   constructor(
     private readonly config: PluginConfig,
     client?: TypeSafeClient,
-    private readonly onUsage?: (usage: Usage, model: string) => void,
+    private readonly onUsage?: (usage: Usage & { readonly cost?: number | undefined }, model: string) => void,
     private readonly onRequest?: () => void,
   ) {
     const apiKey = resolveApiKey(config);
-    this.client = client ?? new TypeSafeClient({
+    this.client = config.provider.selected === "respan-ai" ? undefined : client ?? new TypeSafeClient({
       ...(apiKey ? { apiKey } : {}),
-      ...(config.endpoint ? { baseURL: config.endpoint } : {}),
-      defaultModel: config.model,
+      ...(config.provider.jev_compatible.endpoint ? { baseURL: config.provider.jev_compatible.endpoint } : {}),
+      defaultModel: decisionModel(config),
       timeout: config.limits.timeoutMs,
       retry: { maxRetries: 0 },
       logLevel: "off",
     });
+  }
+
+  private async decide(
+    state: Record<string, string | string[]>,
+    questions: Questions,
+    signal?: AbortSignal,
+  ): Promise<z.infer<typeof responseSchema>> {
+    if (this.config.provider.selected === "jev_compatible") {
+      if (!this.client) throw new Error("TypeSafe client is unavailable");
+      return responseSchema.parse(await this.client.systemOne({ state, questions }, signal ? { signal } : {}));
+    }
+    const adapted: Questions = {};
+    const branches = new Map<string, string[]>();
+    for (const [name, question] of Object.entries(questions)) {
+      if (question.type === "noul") {
+        adapted[name] = question;
+        continue;
+      }
+      const labels = question.type === "choice" ? Object.keys(question.criteria)
+        : question.criteria.map((_description, index) => String(index));
+      branches.set(name, labels);
+      for (const [index, label] of labels.entries()) {
+        const description = question.type === "choice" ? question.criteria[label] : question.criteria[index];
+        adapted[`${name}__${index}`] = {
+          type: "noul",
+          instructions: `${String(question.instructions ?? "")}\nDoes this option apply: ${label} — ${String(description ?? "")}?`,
+          criteria: { true: "This option applies", false: "This option does not apply" },
+        };
+      }
+    }
+    const response = await fetch(new URL("/api/alpha/decisions",
+      this.config.provider["respan-ai"].endpoint ?? "https://openrouter.ai"), {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${resolveApiKey(this.config)}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ model: decisionModel(this.config), state: JSON.stringify(state), questions: adapted }),
+      signal: AbortSignal.any([
+        AbortSignal.timeout(this.config.limits.spanTimeoutMs),
+        ...(signal ? [signal] : []),
+      ]),
+    });
+    if (!response.ok) throw new DecisionHTTPError(response.status);
+    const result = responseSchema.parse(await response.json());
+    const answers = { ...result.answers };
+    for (const [name, labels] of branches) {
+      const values = labels.map((_label, index) => noulAnswer.safeParse(answers[`${name}__${index}`]));
+      for (const index of labels.keys()) delete answers[`${name}__${index}`];
+      if (values.some((value) => !value.success)) continue;
+      const probabilities = Object.fromEntries(labels.map((label, index) =>
+        [label, values[index]?.data?.noul ?? 0]));
+      const question = questions[name];
+      if (question?.type === "choice") {
+        const winner = labels.reduce((best, label) =>
+          (probabilities[label] ?? 0) > (probabilities[best] ?? 0) ? label : best);
+        answers[name] = {
+          type: "choice", choice: winner,
+          confidence: probabilities[winner], probabilities,
+        };
+      } else if (question?.type === "score") {
+        const total = Object.values(probabilities).reduce((sum, value) => sum + value, 0);
+        if (total > 0) {
+          answers[name] = {
+            type: "score",
+            score: labels.reduce((sum, _label, index) => sum + index * (values[index]?.data?.noul ?? 0), 0) / total,
+          };
+        }
+      }
+    }
+    return { ...result, answers };
   }
 
   async next(state: NextState, signal?: AbortSignal, availableCalls?: number): Promise<NextDecision> {
@@ -205,8 +284,8 @@ export class JevDecider {
     }
     if (Object.keys(questions).length === 0) return {};
     this.onRequest?.();
-    const result = responseSchema.parse(await this.client.systemOne({
-      state: {
+    const result = await this.decide(
+      {
         request: redactText(state.request, this.config).slice(0, this.config.limits.stateChars),
         lastResults: state.lastResults.map((item) =>
           redactText(item, this.config).slice(0, this.config.limits.stateChars)),
@@ -220,7 +299,8 @@ export class JevDecider {
         } : {}),
       },
       questions,
-    }, signal ? { signal } : {}));
+      signal,
+    );
     this.onUsage?.(result.usage, result.model);
     const answers = result.answers;
     const looping = noulAnswer.safeParse(questions["looping"] ? answers["looping"] : undefined);
@@ -261,10 +341,11 @@ export class JevDecider {
         const rerankQuestions: Questions = {};
         addChoice(rerankQuestions, "skill", detailed, this.config);
         this.onRequest?.();
-        const reranked = responseSchema.parse(await this.client.systemOne({
-          state: { request: redactText(state.request, this.config).slice(0, this.config.limits.stateChars) },
-          questions: rerankQuestions,
-        }, signal ? { signal } : {}));
+        const reranked = await this.decide(
+          { request: redactText(state.request, this.config).slice(0, this.config.limits.stateChars) },
+          rerankQuestions,
+          signal,
+        );
         this.onUsage?.(reranked.usage, reranked.model);
         skill = select(reranked.answers, "skill", detailed, this.config);
       }
@@ -296,20 +377,21 @@ export class JevDecider {
     input: Record<string, unknown>,
     signal?: AbortSignal,
   ): Promise<number> {
-    const response = responseSchema.parse(await this.client.systemOne({
-      state: {
+    const response = await this.decide(
+      {
         request: redactText(request, this.config).slice(0, this.config.limits.stateChars),
         tool: redactText(tool, this.config),
         input: JSON.stringify(redactJson(JSON.parse(JSON.stringify(input)), this.config))
           .slice(0, this.config.limits.stateChars),
       },
-      questions: {
+      {
         outsideScope: {
           type: "noul",
           instructions: "Would this tool call act outside the user's requested scope?",
         },
       },
-    }, signal ? { signal } : {}));
+      signal,
+    );
     this.onUsage?.(response.usage, response.model);
     return noulAnswer.parse(response.answers["outsideScope"]).noul;
   }

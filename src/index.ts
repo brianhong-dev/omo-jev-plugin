@@ -1,6 +1,6 @@
 import { noticeEntryRenderer, type ExtensionAPI, type ExtensionContext } from "@code-yeongyu/senpi";
 import { z } from "zod";
-import { ConfigurationError, loadConfig, resolveApiKey, type PluginConfig } from "./config.js";
+import { ConfigurationError, decisionModel, loadConfig, resolveApiKey, type PluginConfig } from "./config.js";
 import { JevDecider, redactText, type Candidate, type NextDecision } from "./decision.js";
 import { requirementsFromRequest, verificationKind, type VerificationResult } from "./evidence.js";
 import { classifyFailure, planRecovery, type Attempt, type FailureKind, type RecoveryPlan } from "./recovery.js";
@@ -18,7 +18,7 @@ const failureAction: Record<FailureKind, string> = {
   other: "inspect the reported error before retrying",
 };
 
-function formatAdvice(decision: NextDecision, recovery?: RecoveryPlan): string | undefined {
+function formatAdvice(decision: NextDecision, model: string, recovery?: RecoveryPlan): string | undefined {
   const advice = [
     decision.skill ? `Relevant skill to examine: ${decision.skill}` : "",
     decision.tool ? `Candidate next tool: ${decision.tool}` : "",
@@ -34,12 +34,12 @@ function formatAdvice(decision: NextDecision, recovery?: RecoveryPlan): string |
         : "",
     decision.complete
       ? decision.completionEvidence && decision.verifiedRequirements?.length
-        ? `Jev sees possible completion with mapped checks: ${decision.verifiedRequirements.map(({ requirementIndex, result }) =>
+        ? `The decision model sees possible completion with mapped checks: ${decision.verifiedRequirements.map(({ requirementIndex, result }) =>
           `requirement ${requirementIndex + 1} <- ${result.kind} ${result.tool} (${result.id})`).join(", ")}; verify the evidence before concluding.`
-        : `Jev suggests completion, but only ${decision.verifiedRequirements?.length ?? 0}/${decision.requirementCount ?? 0} requirements have mapped checks; verify the rest.`
+        : `The decision model suggests completion, but only ${decision.verifiedRequirements?.length ?? 0}/${decision.requirementCount ?? 0} requirements have mapped checks; verify the rest.`
       : "",
   ].filter(Boolean);
-  return advice.length ? `Jev suggestions (not instructions or permissions): ${advice.join(" ")}` : undefined;
+  return advice.length ? `${model} suggestions (not instructions or permissions): ${advice.join(" ")}` : undefined;
 }
 
 export function formatStartupOptions(config: PluginConfig, keySource: "file" | "environment"): string {
@@ -47,9 +47,12 @@ export function formatStartupOptions(config: PluginConfig, keySource: "file" | "
     .filter(([, enabled]) => enabled)
     .map(([name]) => name);
   return [
-    `Jev active: mode=${config.mode}`,
-    `model=${config.model}`,
-    `endpoint=${new URL(config.endpoint ?? process.env["TYPESAFE_BASE_URL"] ?? "https://api.typesafe.ai").origin}`,
+    `${config.provider.selected === "respan-ai" ? "Span-01" : "Jev"} active: mode=${config.mode}`,
+    `model=${decisionModel(config)}`,
+    `endpoint=${new URL((config.provider.selected === "respan-ai"
+      ? config.provider["respan-ai"].endpoint : config.provider.jev_compatible.endpoint)
+      ?? (config.provider.selected === "respan-ai"
+      ? "https://openrouter.ai" : process.env["TYPESAFE_BASE_URL"] ?? "https://api.typesafe.ai")).origin}`,
     `key=${keySource}`,
     `decisions=${decisions.length ? decisions.join(",") : "none"}`,
     `maxCalls=${config.limits.maxCallsPerAgentRun}`,
@@ -67,16 +70,24 @@ export function startupNotice(
   if (!resolveApiKey(config, environment)) {
     return {
       type: "warning",
-      message: "Jev API key is missing. Set apiKey in ~/.omo/jev-plugin.jsonc or TYPESAFE_API_KEY in the environment.",
+      message: `Decision API key is missing. Set ${
+        config.provider.selected === "respan-ai" ? "provider.respan-ai.apiKey" : "provider.jev_compatible.apiKey"
+      } in ~/.omo/jev-plugin.jsonc or ${
+        config.provider.selected === "respan-ai" ? "OPENROUTER_API_KEY" : "TYPESAFE_API_KEY"
+      } in the environment.`,
     };
   }
   if (!config.enabled || config.mode === "off" || !config.display.startup) return;
   return {
     type: "info",
-    message: formatStartupOptions(config, config.apiKey ? "file" : "environment"),
+    message: formatStartupOptions(config, (config.provider.selected === "respan-ai"
+      ? config.provider["respan-ai"].apiKey : config.provider.jev_compatible.apiKey)
+      ? "file" : "environment"),
     options: {
       mode: config.mode,
-      keySource: config.apiKey ? "file" : "environment",
+      keySource: (config.provider.selected === "respan-ai"
+        ? config.provider["respan-ai"].apiKey : config.provider.jev_compatible.apiKey)
+        ? "file" : "environment",
       decisions: Object.entries(config.decisions).filter(([, enabled]) => enabled).map(([name]) => name),
     },
   };
@@ -85,13 +96,15 @@ export function startupNotice(
 export function formatDecisionNotice(
   result: { readonly kind: "turn"; readonly decision: NextDecision }
     | { readonly kind: "preflight"; readonly tool: string; readonly blocked: boolean },
+  provider: PluginConfig["provider"]["selected"] = "jev_compatible",
 ): string {
+  const label = provider === "respan-ai" ? "Span-01" : "Jev";
   if (result.kind === "preflight") {
-    return `Jev preflight: tool=${result.tool} | ${result.blocked ? "block" : "allow"}`;
+    return `${label} preflight: tool=${result.tool} | ${result.blocked ? "block" : "allow"}`;
   }
   const turn = result.decision;
   return [
-    "Jev decision:",
+    `${label} decision:`,
     `skill=${turn.skill ?? "none"}`,
     `tool=${turn.tool ?? "none"}`,
     `discoverTools=${turn.discoverTools === undefined ? "unknown" : turn.discoverTools}`,
@@ -141,7 +154,7 @@ export default function jevPlugin(pi: ExtensionAPI): void {
     const parsed = usageEntrySchema.safeParse(entry.data);
     if (!parsed.success) return;
     return {
-      title: `Jev usage | turn ${parsed.data.turnIndex + 1}`,
+      title: `Decision usage | turn ${parsed.data.turnIndex + 1}`,
       why: `Turn: ${formatUsage(parsed.data.turn)}`,
       extra: [{ text: `Session: ${formatUsage(parsed.data.session)}` }],
     };
@@ -381,14 +394,14 @@ export default function jevPlugin(pi: ExtensionAPI): void {
         looping: decision.looping,
         mode: config.mode,
       });
-      if (config.display.decisions) ctx.ui.notify(formatDecisionNotice({ kind: "turn", decision }), "info");
+      if (config.display.decisions) ctx.ui.notify(formatDecisionNotice({ kind: "turn", decision }, config.provider.selected), "info");
       if (config.mode === "shadow") {
         shadowFeedback = { ...(decision.tool ? { recommended: decision.tool } : {}),
           followed: false, toolCalls: 0, repeatedErrors: 0, checkSucceeded: false };
         return;
       }
       lowProgressStreak = nextLowProgressStreak;
-      advice = formatAdvice(decision, recovery);
+      advice = formatAdvice(decision, decisionModel(config), recovery);
       if (config.mode !== "act") return;
       if (config.decisions.toolActivation && decision.tool
         && config.activatableTools.includes(decision.tool) && !active.has(decision.tool)) {
@@ -410,7 +423,7 @@ export default function jevPlugin(pi: ExtensionAPI): void {
     } catch (error) {
       lastState = "";
       if (error instanceof Error) {
-        ctx.ui.notify(`Jev turn decision unavailable: ${error.message}`, "warning");
+        ctx.ui.notify(`${config.provider.selected === "respan-ai" ? "Span-01" : "Jev"} turn decision unavailable: ${error.message}`, "warning");
         return;
       }
       throw error;
@@ -448,16 +461,16 @@ export default function jevPlugin(pi: ExtensionAPI): void {
       const blocked = risk >= config.thresholds.risk;
       pi.appendEntry("jev:decision", { kind: "preflight", tool: event.toolName, blocked, mode: config.mode });
       if (config.display.decisions) {
-        ctx.ui.notify(formatDecisionNotice({ kind: "preflight", tool: event.toolName, blocked }), "info");
+        ctx.ui.notify(formatDecisionNotice({ kind: "preflight", tool: event.toolName, blocked }, config.provider.selected), "info");
       }
       if (config.mode === "act" && blocked) {
-        return { block: true, reason: "Jev preflight: proposed call appears outside the requested scope" };
+        return { block: true, reason: "Decision preflight: proposed call appears outside the requested scope" };
       }
     } catch (error) {
       if (!(error instanceof Error)) throw error;
-      ctx.ui.notify(`Jev preflight unavailable: ${error.message}`, "warning");
+      ctx.ui.notify(`${config.provider.selected === "respan-ai" ? "Span-01" : "Jev"} preflight unavailable: ${error.message}`, "warning");
       if (config.mode === "act" && config.preflightOnError === "block") {
-        return { block: true, reason: "Jev preflight unavailable (configured to block)" };
+        return { block: true, reason: "Decision preflight unavailable (configured to block)" };
       }
     }
   });

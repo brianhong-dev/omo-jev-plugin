@@ -17,9 +17,17 @@ export type UsageTotals = z.infer<typeof usageTotalsSchema>;
 
 export const emptyUsage: UsageTotals = { inputTokens: 0, outputTokens: 0, estimatedCost: 0 };
 
-export function addUsage(total: UsageTotals, usage: Usage, model: string): UsageTotals {
-  // Jev 1.13: $0.042 per million input tokens; output tokens are free.
-  const cost = model === "jev-1.13.0" ? usage.input_tokens * 0.042 / 1_000_000 : null;
+export function addUsage(
+  total: UsageTotals,
+  usage: Usage & { readonly cost?: number | undefined },
+  model: string,
+): UsageTotals {
+  const cost = usage.cost ?? (
+    model === "jev-1.13.0" ? usage.input_tokens * 0.042 / 1_000_000
+      : /^respan\/span-01-lite(?:-\d{8})?$/.test(model) ? 0
+        : /^respan\/span-01(?:-\d{8})?$/.test(model) ? usage.input_tokens * 0.02 / 1_000_000
+          : null
+  );
   return {
     inputTokens: total.inputTokens + usage.input_tokens,
     outputTokens: total.outputTokens + usage.output_tokens,
