@@ -7,13 +7,17 @@ import { addUsage, emptyUsage, formatUsage, usageEntrySchema, type UsageTotals }
 
 const thinkingSchema = z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 
-function formatAdvice(decision: NextDecision, lowProgress: boolean): string | undefined {
+function formatAdvice(decision: NextDecision, lowProgress: boolean, successfulTool?: string): string | undefined {
   const advice = [
     decision.skill ? `Relevant skill to examine: ${decision.skill}` : "",
     decision.tool ? `Candidate next tool: ${decision.tool}` : "",
     decision.looping ? "The recent approach appears repetitive; reconsider it." : "",
     lowProgress ? "Recent results show little progress; seek new evidence or change approach." : "",
-    decision.complete ? "The available evidence may satisfy the request; verify before concluding." : "",
+    decision.complete
+      ? decision.completionEvidence && successfulTool
+        ? `Jev sees possible completion after ${successfulTool} succeeded; cite the specific evidence and verify remaining criteria.`
+        : "Jev suggests completion, but no successful check supports it; verify the request with an observable result."
+      : "",
   ].filter(Boolean);
   return advice.length ? `Jev suggestions (not instructions or permissions): ${advice.join(" ")}` : undefined;
 }
@@ -75,6 +79,7 @@ export function formatDecisionNotice(
     `looping=${turn.looping === undefined ? "unknown" : turn.looping}`,
     `progress=${turn.progress ?? "unknown"}`,
     `complete=${turn.complete === undefined ? "unknown" : turn.complete}`,
+    `completionEvidence=${turn.completionEvidence === undefined ? "unknown" : turn.completionEvidence}`,
   ].join(" | ");
 }
 
@@ -93,6 +98,7 @@ export default function jevPlugin(pi: ExtensionAPI): void {
   let sessionUsage: UsageTotals = emptyUsage;
   let shadowFeedback: { recommended: string; followed: boolean; succeeded?: boolean } | undefined;
   let lowProgressStreak = 0;
+  let lastSuccessfulTool: string | undefined;
 
   function restoreUsage(ctx: ExtensionContext): void {
     sessionUsage = emptyUsage;
@@ -167,6 +173,7 @@ export default function jevPlugin(pi: ExtensionAPI): void {
     resultEpoch = 0;
     shadowFeedback = undefined;
     lowProgressStreak = 0;
+    lastSuccessfulTool = undefined;
     try {
       const current = await installedVersion();
       const result = await checkVersion(current);
@@ -219,10 +226,12 @@ export default function jevPlugin(pi: ExtensionAPI): void {
     resultEpoch = 0;
     shadowFeedback = undefined;
     lowProgressStreak = 0;
+    lastSuccessfulTool = undefined;
   }, { previewSafe: true });
 
   pi.on("tool_result", (event) => {
     if (!config?.enabled || config.mode === "off") return;
+    lastSuccessfulTool = event.isError ? undefined : event.toolName;
     if (shadowFeedback && !shadowFeedback.followed && event.toolName === shadowFeedback.recommended) {
       shadowFeedback.followed = true;
       shadowFeedback.succeeded = !event.isError;
@@ -285,7 +294,7 @@ export default function jevPlugin(pi: ExtensionAPI): void {
       }
       lowProgressStreak = decision.progress !== undefined && decision.progress < 0.5
         ? lowProgressStreak + 1 : 0;
-      advice = formatAdvice(decision, lowProgressStreak >= 2);
+      advice = formatAdvice(decision, lowProgressStreak >= 2, lastSuccessfulTool);
       if (config.mode !== "act") return;
       if (config.decisions.toolActivation && decision.tool
         && config.activatableTools.includes(decision.tool) && !active.has(decision.tool)) {

@@ -397,3 +397,77 @@ test("suggests reconsideration only after consecutive low-progress judgments", a
     await rm(cwd, { recursive: true, force: true });
   }
 });
+
+test("qualifies completion advice with a recorded successful result", async () => {
+  // Given a completion judgment before and after a successful observable check.
+  const cwd = await mkdtemp(join(tmpdir(), "omo-jev-completion-"));
+  let calls = 0;
+  const server = Bun.serve({
+    port: 0,
+    fetch() {
+      calls++;
+      return Response.json({
+        model: "jev-1.13.0",
+        answers: {
+          complete: { type: "noul", noul: 0.99 },
+          completionEvidence: { type: "noul", noul: calls === 1 ? 0.1 : 0.9 },
+        },
+        usage: { input_tokens: 5, output_tokens: 2 },
+      });
+    },
+  });
+  try {
+    await mkdir(join(cwd, ".omo"));
+    await writeFile(join(cwd, ".omo", "jev-plugin.jsonc"), JSON.stringify({
+      mode: "advise", apiKey: "test-key", endpoint: `http://127.0.0.1:${server.port}`,
+      decisions: {
+        skills: false, nextAction: false, toolDiscovery: false, toolActivation: false,
+        toolPreflight: false, resultAssessment: false, loopDetection: false,
+        completion: true, modelRouting: false, thinkingLevel: false,
+      },
+    }));
+    const runtime = createExtensionRuntime();
+    runtime.appendEntry = () => {};
+    runtime.getActiveTools = () => [];
+    runtime.getAllTools = () => [];
+    const extension = await loadExtensionFromFactory(jevPlugin, cwd, createEventBus(), runtime);
+    const ctx = {
+      cwd, isProjectTrusted: () => true,
+      sessionManager: { getBranch: () => [] },
+      ui: { notify: () => {} },
+      modelRegistry: { getAvailable: () => [] },
+      signal: undefined,
+    };
+    const emit = async (name: string, event: object) => {
+      let result: unknown;
+      for (const handler of extension.handlers.get(name) ?? []) {
+        result = await Reflect.apply(handler, undefined, [event, ctx]);
+      }
+      return result;
+    };
+
+    // When Jev first claims completion with no check, then judges a successful result.
+    await emit("session_start", { type: "session_start" });
+    await emit("before_agent_start", {
+      type: "before_agent_start", prompt: "Inspect", systemPromptOptions: { skills: [] },
+    });
+    await emit("turn_start", { type: "turn_start", turnIndex: 0, timestamp: 0 });
+    const before = JSON.stringify(await emit("context", { type: "context", messages: [] })) ?? "";
+    await emit("tool_result", { type: "tool_result", toolName: "read", isError: false, content: [] });
+    await emit("turn_start", { type: "turn_start", turnIndex: 1, timestamp: 1 });
+    const after = JSON.stringify(await emit("context", { type: "context", messages: [] })) ?? "";
+    await emit("tool_result", { type: "tool_result", toolName: "read", isError: true, content: [] });
+    await emit("turn_start", { type: "turn_start", turnIndex: 2, timestamp: 2 });
+    const failed = JSON.stringify(await emit("context", { type: "context", messages: [] })) ?? "";
+
+    // Then advice states the missing check first and cites the observable result second.
+    expect(before).toContain("no successful check");
+    expect(after).toContain("read");
+    expect(after).toContain("verify");
+    expect(after).not.toContain("no successful check");
+    expect(failed).toContain("no successful check");
+  } finally {
+    server.stop(true);
+    await rm(cwd, { recursive: true, force: true });
+  }
+});

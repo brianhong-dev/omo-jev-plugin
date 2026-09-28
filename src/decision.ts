@@ -61,6 +61,7 @@ export type NextDecision = {
   readonly looping?: boolean;
   readonly progress?: number;
   readonly complete?: boolean;
+  readonly completionEvidence?: boolean;
 };
 
 function select(
@@ -143,6 +144,12 @@ export class JevDecider {
         type: "noul",
         instructions: "Is the user's request fully satisfied by the observed work?",
       };
+      if (state.lastResults.length > 0) {
+        questions["completionEvidence"] = {
+          type: "noul",
+          instructions: "Do the recent results include a direct successful check that verifies the user's request?",
+        };
+      }
     }
     if (Object.keys(questions).length === 0) return {};
     this.onRequest?.();
@@ -159,6 +166,7 @@ export class JevDecider {
     const looping = noulAnswer.safeParse(answers["looping"]);
     const progress = scoreAnswer.safeParse(answers["progress"]);
     const complete = noulAnswer.safeParse(answers["complete"]);
+    const completionEvidence = noulAnswer.safeParse(answers["completionEvidence"]);
     const tool = select(answers, "tool", state.tools, this.config);
     let skill = select(answers, "skill", state.skills, this.config);
     if (skill && this.config.skillRerank && availableCalls >= 2 && state.skills.length >= 24) {
@@ -197,6 +205,8 @@ export class JevDecider {
       ...(looping.success ? { looping: looping.data.noul >= this.config.thresholds.risk } : {}),
       ...(progress.success ? { progress: progress.data.score } : {}),
       ...(complete.success ? { complete: complete.data.noul >= this.config.thresholds.fit } : {}),
+      ...(completionEvidence.success
+        ? { completionEvidence: completionEvidence.data.noul >= this.config.thresholds.fit } : {}),
     };
   }
 
