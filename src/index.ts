@@ -3,19 +3,35 @@ import { z } from "zod";
 import { ConfigurationError, loadConfig, resolveApiKey, type PluginConfig } from "./config.js";
 import { JevDecider, redactText, type Candidate, type NextDecision } from "./decision.js";
 import { requirementsFromRequest, verificationKind, type VerificationResult } from "./evidence.js";
+import { classifyFailure, planRecovery, type Attempt, type FailureKind, type RecoveryPlan } from "./recovery.js";
 import { isSuccessfulCheck, replayShadow, shadowFeedbackSchema, type ShadowFeedback } from "./shadow.js";
 import { checkVersion, installedVersion } from "./update.js";
 import { addUsage, emptyUsage, formatUsage, usageEntrySchema, type UsageTotals } from "./usage.js";
 
 const thinkingSchema = z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 
-function formatAdvice(decision: NextDecision, lowProgress: boolean): string | undefined {
+const failureAction: Record<FailureKind, string> = {
+  "missing-path": "check that the target path exists before retrying",
+  permission: "check access to the target before retrying",
+  timeout: "check service reachability before retrying",
+  http: "inspect the HTTP status and response before retrying",
+  other: "inspect the reported error before retrying",
+};
+
+function formatAdvice(decision: NextDecision, recovery?: RecoveryPlan): string | undefined {
   const advice = [
     decision.skill ? `Relevant skill to examine: ${decision.skill}` : "",
     decision.tool ? `Candidate next tool: ${decision.tool}` : "",
     decision.discoverTools ? "Available tools do not fit; use tool_search to discover one." : "",
-    decision.looping ? "The recent approach appears repetitive; reconsider it." : "",
-    lowProgress ? "Recent results show little progress; seek new evidence or change approach." : "",
+    decision.looping && !recovery ? "The recent approach appears repetitive; reconsider it." : "",
+    recovery?.kind === "failure"
+      ? `Recent ${recovery.tool} failure (${recovery.failure ?? "other"}): ${failureAction[recovery.failure ?? "other"]}; ${recovery.alternativeTool
+        ? `gather independent evidence with ${recovery.alternativeTool}` : "do not repeat the same call unchanged"}.`
+      : recovery?.kind === "stalled"
+        ? `Results after ${recovery.tool} show little progress; ${recovery.alternativeTool
+          ? `gather independent evidence with ${recovery.alternativeTool}`
+          : `compare the last ${recovery.tool} result with an unmet requirement before using it again`}.`
+        : "",
     decision.complete
       ? decision.completionEvidence && decision.verifiedRequirements?.length
         ? `Jev sees possible completion with mapped checks: ${decision.verifiedRequirements.map(({ requirementIndex, result }) =>
@@ -86,6 +102,7 @@ export function formatDecisionNotice(
     `complete=${turn.complete === undefined ? "unknown" : turn.complete}`,
     `completionEvidence=${turn.completionEvidence === undefined ? "unknown" : turn.completionEvidence}`,
     `mappedChecks=${turn.verifiedRequirements?.length ?? 0}/${turn.requirementCount ?? 0}`,
+    `recoveryTool=${turn.recoveryTool ?? "none"}`,
   ].join(" | ");
 }
 
@@ -108,6 +125,7 @@ export default function jevPlugin(pi: ExtensionAPI): void {
   let requirements: readonly string[] = [];
   let requirementsTruncated = false;
   let verificationResults: VerificationResult[] = [];
+  let recentAttempts: Attempt[] = [];
 
   function restoreUsage(ctx: ExtensionContext): void {
     sessionUsage = emptyUsage;
@@ -197,6 +215,7 @@ export default function jevPlugin(pi: ExtensionAPI): void {
     requirements = [];
     requirementsTruncated = false;
     verificationResults = [];
+    recentAttempts = [];
     try {
       const current = await installedVersion();
       const result = await checkVersion(current);
@@ -232,6 +251,7 @@ export default function jevPlugin(pi: ExtensionAPI): void {
   pi.on("session_tree", (_event, ctx) => {
     restoreUsage(ctx);
     verificationResults = [];
+    recentAttempts = [];
     lastState = "";
   });
 
@@ -258,10 +278,19 @@ export default function jevPlugin(pi: ExtensionAPI): void {
     previousErrorTool = undefined;
     lowProgressStreak = 0;
     verificationResults = [];
+    recentAttempts = [];
   }, { previewSafe: true });
 
   pi.on("tool_result", (event) => {
     if (!config?.enabled || config.mode === "off") return;
+    const diagnostic = event.isError
+      ? event.content.filter((part) => part.type === "text").map((part) => part.text).join(" ").slice(0, 512) : "";
+    recentAttempts.push({
+      tool: event.toolName,
+      failed: event.isError,
+      ...(event.isError ? { failure: classifyFailure(diagnostic) } : {}),
+    });
+    recentAttempts = recentAttempts.slice(-4);
     if (shadowFeedback) {
       shadowFeedback.toolCalls++;
       shadowFeedback.firstTool ??= event.toolName;
@@ -319,10 +348,12 @@ export default function jevPlugin(pi: ExtensionAPI): void {
       request,
       lastResults: recentResults,
       tools,
+      activeTools: [...active],
       canDiscoverTools: active.has("tool_search"),
       requirements,
       requirementsTruncated,
       verificationResults,
+      attempts: recentAttempts,
       skills,
       models,
       thinking,
@@ -332,6 +363,10 @@ export default function jevPlugin(pi: ExtensionAPI): void {
     lastState = fingerprint;
     try {
       const decision = await decider.next(state, ctx.signal, config.limits.maxCallsPerAgentRun - callCount);
+      const nextLowProgressStreak = decision.progress !== undefined && decision.progress < 0.5
+        ? lowProgressStreak + 1 : 0;
+      const recovery = config.mode === "shadow" ? undefined
+        : planRecovery(nextLowProgressStreak >= 2 || decision.looping === true, recentAttempts, decision.recoveryTool);
       pi.appendEntry("jev:decision", {
         kind: "turn",
         tool: decision.tool,
@@ -340,6 +375,7 @@ export default function jevPlugin(pi: ExtensionAPI): void {
         verifiedRequirements: decision.verifiedRequirements?.map(({ requirementIndex, result }) => ({
           requirementIndex, resultId: result.id, kind: result.kind, tool: result.tool,
         })),
+        recovery,
         skill: decision.skill,
         model: decision.model,
         looping: decision.looping,
@@ -351,9 +387,8 @@ export default function jevPlugin(pi: ExtensionAPI): void {
           followed: false, toolCalls: 0, repeatedErrors: 0, checkSucceeded: false };
         return;
       }
-      lowProgressStreak = decision.progress !== undefined && decision.progress < 0.5
-        ? lowProgressStreak + 1 : 0;
-      advice = formatAdvice(decision, lowProgressStreak >= 2);
+      lowProgressStreak = nextLowProgressStreak;
+      advice = formatAdvice(decision, recovery);
       if (config.mode !== "act") return;
       if (config.decisions.toolActivation && decision.tool
         && config.activatableTools.includes(decision.tool) && !active.has(decision.tool)) {

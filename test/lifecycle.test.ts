@@ -425,7 +425,12 @@ test("suggests reconsideration only after consecutive low-progress judgments", a
       requests++;
       return Response.json({
         model: "jev-1.13.0",
-        answers: { progress: { type: "score", score: requests === 3 ? 1.2 : 0.2 } },
+        answers: {
+          progress: { type: "score", score: requests === 3 ? 1.2 : 0.2 },
+          recoveryTool: { type: "choice", choice: "bash", confidence: 0.9,
+            probabilities: { bash: 0.9, __none__: 0.1 } },
+          recoveryToolFits: { type: "noul", noul: 0.9 },
+        },
         usage: { input_tokens: 5, output_tokens: 2 },
       });
     },
@@ -441,9 +446,14 @@ test("suggests reconsideration only after consecutive low-progress judgments", a
       },
     }));
     const runtime = createExtensionRuntime();
-    runtime.appendEntry = () => {};
-    runtime.getActiveTools = () => [];
-    runtime.getAllTools = () => [];
+    const history: Array<{ type: string; data: unknown }> = [];
+    runtime.appendEntry = (type, data) => { history.push({ type, data }); };
+    runtime.getActiveTools = () => ["read", "bash"];
+    runtime.getAllTools = () => ["read", "bash"].map((name) => ({
+      name, label: name, description: `Use ${name}`, parameters: Type.Object({}),
+      sourceInfo: { path: "test", source: "test", scope: "system", origin: "top-level" },
+      exposure: "direct" as const, searchKeywords: [], allowLazyActivation: false,
+    }));
     const extension = await loadExtensionFromFactory(jevPlugin, cwd, createEventBus(), runtime);
     const ctx = {
       cwd, isProjectTrusted: () => true,
@@ -465,18 +475,27 @@ test("suggests reconsideration only after consecutive low-progress judgments", a
     await emit("before_agent_start", {
       type: "before_agent_start", prompt: "Inspect", systemPromptOptions: { skills: [] },
     });
-    const advice: string[] = [];
+    const contexts: unknown[] = [];
     for (let turnIndex = 0; turnIndex < 4; turnIndex++) {
-      await emit("tool_result", { type: "tool_result", toolName: "read", isError: false, content: [] });
+      await emit("tool_result", { type: "tool_result", toolName: "read", input: {}, isError: false, content: [] });
       await emit("turn_start", { type: "turn_start", turnIndex, timestamp: turnIndex });
-      advice.push(JSON.stringify(await emit("context", { type: "context", messages: [] })) ?? "");
+      contexts.push(await emit("context", { type: "context", messages: [] }));
     }
+    await emit("tool_result", { type: "tool_result", toolName: "read", input: {}, isError: true,
+      content: [{ type: "text", text: "ENOENT: missing path /private/file" }] });
+    await emit("turn_start", { type: "turn_start", turnIndex: 4, timestamp: 4 });
 
-    // Then the second low score advises a change, improvement resets the streak.
-    expect(advice[0]).not.toContain("little progress");
-    expect(advice[1]).toContain("little progress");
-    expect(advice[2]).not.toContain("little progress");
-    expect(advice[3]).not.toContain("little progress");
+    // Then improvement resets the streak; a later missing-path failure gets a specific plan.
+    const plans = history.filter(({ type }) => type === "jev:decision")
+      .map(({ data }) => data && typeof data === "object" && "recovery" in data ? data.recovery : undefined);
+    expect(plans).toEqual([undefined, {
+      kind: "stalled", tool: "read", alternativeTool: "bash",
+    }, undefined, undefined, {
+      kind: "failure", tool: "read", failure: "missing-path", alternativeTool: "bash",
+    }]);
+    expect(JSON.stringify(plans)).not.toContain("/private/file");
+    expect(contexts[0]).toBeUndefined();
+    expect(contexts[1]).toHaveProperty("messages");
   } finally {
     server.stop(true);
     await rm(cwd, { recursive: true, force: true });

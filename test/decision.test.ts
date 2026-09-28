@@ -10,10 +10,12 @@ const state: NextState = {
   request: "Inspect the source file",
   lastResults: [],
   tools: [{ name: "read", description: "Read a local file" }],
+  activeTools: ["read"],
   canDiscoverTools: false,
   requirements: ["Inspect the source file"],
   requirementsTruncated: false,
   verificationResults: [],
+  attempts: [],
   skills: [],
   models: [],
   thinking: [],
@@ -239,6 +241,57 @@ test("rejects invented check references in completion evidence", async () => {
     expect(result.verifiedRequirements).toEqual([
       { requirementIndex: 1, result: { id: "check-tests", tool: "bash", kind: "test" } },
     ]);
+  } finally {
+    server.stop(true);
+  }
+});
+
+test("selects only an untried active tool for recovery", async () => {
+  // Given one failed attempt, one active alternative, and an inactive suggestion.
+  const active = config();
+  active.decisions.nextAction = false;
+  active.decisions.resultAssessment = true;
+  const attempted = {
+    ...state, lastResults: ["read: error"], attempts: [{ tool: "read", failed: true, failure: "missing-path" }] as const,
+    tools: [...state.tools, { name: "grep", description: "Search files" }, { name: "bash", description: "Run shell" }],
+    activeTools: ["read", "grep"],
+  };
+  const { server, client } = serverFor({
+    recoveryTool: { type: "choice", choice: "grep", confidence: 0.9,
+      probabilities: { grep: 0.9, __none__: 0.1 } },
+    recoveryToolFits: { type: "noul", noul: 0.9 },
+    progress: { type: "score", score: 0.1 },
+  });
+  try {
+    // When the recovery candidate is evaluated.
+    const result = await new JevDecider(active, client).next(attempted);
+    // Then the locally available untried tool may be proposed.
+    expect(result.recoveryTool).toBe("grep");
+  } finally {
+    server.stop(true);
+  }
+});
+
+test("ignores an inactive Jev recovery tool", async () => {
+  // Given an otherwise plausible tool outside the active host set.
+  const active = config();
+  active.decisions.nextAction = false;
+  active.decisions.resultAssessment = true;
+  const { server, client } = serverFor({
+    recoveryTool: { type: "choice", choice: "bash", confidence: 0.99,
+      probabilities: { bash: 0.99, grep: 0.01 } },
+    recoveryToolFits: { type: "noul", noul: 0.99 },
+    progress: { type: "score", score: 0.1 },
+  });
+  try {
+    // When Jev names a tool the host has not activated.
+    const result = await new JevDecider(active, client).next({
+      ...state, lastResults: ["read: error"], attempts: [{ tool: "read", failed: true }],
+      tools: [...state.tools, { name: "grep", description: "Search files" }, { name: "bash", description: "Run shell" }],
+      activeTools: ["read", "grep"],
+    });
+    // Then the recommendation is not passed to the agent.
+    expect(result.recoveryTool).toBeUndefined();
   } finally {
     server.stop(true);
   }
