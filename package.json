@@ -25,7 +25,7 @@
   },
   "files": ["index.js", "dist", "README.md", "README.ko.md", "LICENSE", "jev-plugin.example.jsonc"],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "bun scripts/build.ts",
     "check": "tsc --noEmit -p tsconfig.json",
     "test": "bun test",
     "prepack": "bun run build"
