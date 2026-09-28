@@ -435,7 +435,7 @@ test("reranks a large skill roster with bounded local skill details", async () =
 
     // When a large roster is evaluated with room in the request budget.
     const result = await new JevDecider(active, client, undefined, () => { counted++; })
-      .next({ ...state, skills }, undefined, 2);
+      .next({ ...state, skills }, undefined, 3);
 
     // Then the shortlist is reconsidered with detail, without transmitting the local path.
     expect(result.skill).toBe("skill-1");
@@ -447,6 +447,146 @@ test("reranks a large skill roster with bounded local skill details", async () =
   } finally {
     server.stop(true);
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("reserves the last Jev call instead of reranking skills", async () => {
+  // Given a large roster with only two calls remaining.
+  const active = config();
+  active.decisions.nextAction = false;
+  active.decisions.skills = true;
+  active.skillRerank = true;
+  const { server, client } = serverFor({
+    skill: { type: "choice", choice: "skill-0", confidence: 0.9,
+      probabilities: { "skill-0": 0.9, __none__: 0.1 } },
+    skillFits: { type: "noul", noul: 0.9 },
+  });
+  let calls = 0;
+  try {
+    // When the skill decision is made with a final call reserved.
+    const result = await new JevDecider(active, client, undefined, () => { calls++; }).next({
+      ...state, skills: Array.from({ length: 25 }, (_, index) => ({
+        name: `skill-${index}`, description: "Candidate skill",
+      })),
+    }, undefined, 2);
+    // Then the primary recommendation is retained without an extra rerank request.
+    expect(result.skill).toBe("skill-0");
+    expect(calls).toBe(1);
+  } finally {
+    server.stop(true);
+  }
+});
+
+test("spends the last call on mapped completion evidence before other judgments", async () => {
+  // Given an observed check alongside available tools, skills, and recent progress.
+  const active = config();
+  active.decisions.completion = true;
+  active.decisions.resultAssessment = true;
+  active.decisions.skills = true;
+  const asked: string[][] = [];
+  const server = Bun.serve({
+    port: 0,
+    async fetch(req) {
+      const body = await req.json();
+      asked.push(Object.keys(body.questions));
+      return Response.json({
+        model: "jev-1.13.0",
+        answers: {
+          complete: { type: "noul", noul: 0.9 },
+          verify0: { type: "choice", choice: "check-1", confidence: 0.9,
+            probabilities: { "check-1": 0.9, __none__: 0.1 } },
+          verify0Fits: { type: "noul", noul: 0.9 },
+          tool: { type: "choice", choice: "read", confidence: 0.9,
+            probabilities: { read: 0.9, __none__: 0.1 } },
+          toolFits: { type: "noul", noul: 0.9 },
+        },
+        usage: { input_tokens: 5, output_tokens: 2 },
+      });
+    },
+  });
+  const client = new TypeSafeClient({
+    apiKey: "test-key", baseURL: `http://127.0.0.1:${server.port}`, retry: { maxRetries: 0 },
+  });
+  try {
+    // When the final available call is made.
+    const result = await new JevDecider(active, client).next({
+      ...state, lastResults: ["bash: success"],
+      skills: [{ name: "inspect", description: "Inspect code" }],
+      verificationResults: [{ id: "check-1", tool: "bash", kind: "test" }],
+    }, undefined, 1);
+    // Then only completion and direct-evidence mapping were requested or accepted.
+    expect(asked).toEqual([["complete", "verify0", "verify0Fits"]]);
+    expect(result.completionEvidence).toBe(true);
+    expect(result.tool).toBeUndefined();
+  } finally {
+    server.stop(true);
+  }
+});
+
+test("prioritizes failure recovery over completion when one call remains", async () => {
+  // Given a fresh failed result, an older successful check, and an untried active tool.
+  const active = config();
+  active.decisions.completion = true;
+  active.decisions.resultAssessment = true;
+  active.decisions.loopDetection = true;
+  const asked: string[][] = [];
+  const server = Bun.serve({
+    port: 0,
+    async fetch(req) {
+      const body = await req.json();
+      asked.push(Object.keys(body.questions));
+      return Response.json({
+        model: "jev-1.13.0",
+        answers: {
+          progress: { type: "score", score: 0.2 },
+          looping: { type: "noul", noul: 0.9 },
+          recoveryTool: { type: "choice", choice: "grep", confidence: 0.9,
+            probabilities: { grep: 0.9, __none__: 0.1 } },
+          recoveryToolFits: { type: "noul", noul: 0.9 },
+          complete: { type: "noul", noul: 0.99 },
+        },
+        usage: { input_tokens: 5, output_tokens: 2 },
+      });
+    },
+  });
+  const client = new TypeSafeClient({
+    apiKey: "test-key", baseURL: `http://127.0.0.1:${server.port}`, retry: { maxRetries: 0 },
+  });
+  try {
+    // When the last call responds with both asked and unsolicited fields.
+    const result = await new JevDecider(active, client).next({
+      ...state, lastResults: ["read: error"],
+      attempts: [{ tool: "read", failed: true, failure: "missing-path" }],
+      verificationResults: [{ id: "check-1", tool: "bash", kind: "test" }],
+      tools: [...state.tools, { name: "grep", description: "Search code" }],
+      activeTools: ["read", "grep"],
+    }, undefined, 1);
+    // Then recovery is preserved while an unasked completion claim is ignored.
+    expect(asked).toEqual([["recoveryTool", "recoveryToolFits", "looping", "progress"]]);
+    expect(result.recoveryTool).toBe("grep");
+    expect(result.complete).toBeUndefined();
+    expect(result.completionEvidence).toBeUndefined();
+  } finally {
+    server.stop(true);
+  }
+});
+
+test("does not spend the last call on completion without a direct check", async () => {
+  // Given a completion-only configuration after a non-verifying read result.
+  const active = config();
+  active.decisions.nextAction = false;
+  active.decisions.completion = true;
+  let calls = 0;
+  const { server, client } = serverFor({ complete: { type: "noul", noul: 0.9 } });
+  try {
+    // When a turn starts with one call remaining but no direct check.
+    const result = await new JevDecider(active, client, undefined, () => { calls++; })
+      .next({ ...state, lastResults: ["read: success"], attempts: [{ tool: "read", failed: false }] }, undefined, 1);
+    // Then the final request remains available for later evidence.
+    expect(result).toEqual({});
+    expect(calls).toBe(0);
+  } finally {
+    server.stop(true);
   }
 });
 

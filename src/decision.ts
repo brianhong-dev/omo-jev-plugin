@@ -131,7 +131,9 @@ export class JevDecider {
     });
   }
 
-  async next(state: NextState, signal?: AbortSignal, availableCalls = 1): Promise<NextDecision> {
+  async next(state: NextState, signal?: AbortSignal, availableCalls?: number): Promise<NextDecision> {
+    const remaining = availableCalls ?? this.config.limits.maxCallsPerAgentRun;
+    if (remaining <= 0) return {};
     const questions: Questions = {};
     if (this.config.decisions.nextAction) {
       addChoice(questions, "tool", state.tools.filter(({ name }) => name !== "tool_search"), this.config);
@@ -178,6 +180,29 @@ export class JevDecider {
         })), this.config);
       }
     }
+    if (remaining === 1) {
+      let priority: string[] = [];
+      if (state.attempts.at(-1)?.failed && (questions["progress"] || questions["looping"])) {
+        priority = ["progress", "looping", "recoveryTool", "recoveryToolFits"];
+      } else if (state.verificationResults.length > 0 && questions["complete"]) {
+        priority = ["complete", ...Object.keys(questions).filter((key) => /^verify\d+(Fits)?$/.test(key))];
+      } else if (state.lastResults.length > 0 && (questions["progress"] || questions["looping"])) {
+        priority = ["progress", "looping", "recoveryTool", "recoveryToolFits"];
+      } else if (questions["tool"]) {
+        priority = ["tool", "toolFits"];
+      } else if (questions["discoverTools"]) {
+        priority = ["discoverTools"];
+      } else if (questions["skill"]) {
+        priority = ["skill", "skillFits"];
+      } else if (questions["model"]) {
+        priority = ["model", "modelFits"];
+      } else if (questions["thinking"]) {
+        priority = ["thinking", "thinkingFits"];
+      }
+      for (const key of Object.keys(questions)) {
+        if (!priority.includes(key)) delete questions[key];
+      }
+    }
     if (Object.keys(questions).length === 0) return {};
     this.onRequest?.();
     const result = responseSchema.parse(await this.client.systemOne({
@@ -189,7 +214,7 @@ export class JevDecider {
           availableTools: state.tools.filter(({ name }) => name !== "tool_search")
             .slice(0, 254).map(({ name }) => redactText(name, this.config)),
         } : {}),
-        ...(this.config.decisions.completion ? {
+        ...(questions["complete"] ? {
           requirements: state.requirements.map((item) =>
             redactText(item, this.config).slice(0, this.config.limits.stateChars)),
         } : {}),
@@ -198,11 +223,11 @@ export class JevDecider {
     }, signal ? { signal } : {}));
     this.onUsage?.(result.usage, result.model);
     const answers = result.answers;
-    const looping = noulAnswer.safeParse(answers["looping"]);
-    const progress = scoreAnswer.safeParse(answers["progress"]);
-    const complete = noulAnswer.safeParse(answers["complete"]);
+    const looping = noulAnswer.safeParse(questions["looping"] ? answers["looping"] : undefined);
+    const progress = scoreAnswer.safeParse(questions["progress"] ? answers["progress"] : undefined);
+    const complete = noulAnswer.safeParse(questions["complete"] ? answers["complete"] : undefined);
     const verifiedRequirements = state.requirements.flatMap((_requirement, index) => {
-      if (!this.config.decisions.completion) return [];
+      if (!questions[`verify${index}`]) return [];
       const id = select(answers, `verify${index}`, state.verificationResults.map((result) => ({
         name: result.id,
         description: result.kind,
@@ -210,13 +235,15 @@ export class JevDecider {
       const result = state.verificationResults.find((item) => item.id === id);
       return result ? [{ requirementIndex: index, result }] : [];
     });
-    const tool = select(answers, "tool", state.tools.filter(({ name }) => name !== "tool_search"), this.config);
-    const discoverTools = noulAnswer.safeParse(answers["discoverTools"]);
+    const tool = questions["tool"] ? select(answers, "tool",
+      state.tools.filter(({ name }) => name !== "tool_search"), this.config) : undefined;
+    const discoverTools = noulAnswer.safeParse(questions["discoverTools"] ? answers["discoverTools"] : undefined);
     const attempted = new Set(state.attempts.map(({ tool }) => tool));
-    const recoveryTool = select(answers, "recoveryTool", state.tools.filter(({ name }) =>
-      state.activeTools.includes(name) && name !== "tool_search" && !attempted.has(name)), this.config);
-    let skill = select(answers, "skill", state.skills, this.config);
-    if (skill && this.config.skillRerank && availableCalls >= 2 && state.skills.length >= 24) {
+    const recoveryTool = questions["recoveryTool"] ? select(answers, "recoveryTool",
+      state.tools.filter(({ name }) => state.activeTools.includes(name)
+        && name !== "tool_search" && !attempted.has(name)), this.config) : undefined;
+    let skill = questions["skill"] ? select(answers, "skill", state.skills, this.config) : undefined;
+    if (skill && this.config.skillRerank && remaining >= 3 && state.skills.length >= 24) {
       const ranked = choiceAnswer.safeParse(answers["skill"]);
       if (ranked.success) {
         const shortlist = Object.entries(ranked.data.probabilities)
@@ -242,8 +269,8 @@ export class JevDecider {
         skill = select(reranked.answers, "skill", detailed, this.config);
       }
     }
-    const model = select(answers, "model", state.models, this.config);
-    const thinking = select(answers, "thinking", state.thinking, this.config);
+    const model = questions["model"] ? select(answers, "model", state.models, this.config) : undefined;
+    const thinking = questions["thinking"] ? select(answers, "thinking", state.thinking, this.config) : undefined;
     return {
       ...(tool ? { tool } : {}),
       ...(discoverTools.success ? { discoverTools: !tool && discoverTools.data.noul >= this.config.thresholds.fit } : {}),
@@ -254,7 +281,7 @@ export class JevDecider {
       ...(looping.success ? { looping: looping.data.noul >= this.config.thresholds.risk } : {}),
       ...(progress.success ? { progress: progress.data.score } : {}),
       ...(complete.success ? { complete: complete.data.noul >= this.config.thresholds.fit } : {}),
-      ...(this.config.decisions.completion ? {
+      ...(questions["complete"] ? {
         completionEvidence: state.requirements.length > 0 && !state.requirementsTruncated
           && verifiedRequirements.length === state.requirements.length,
         verifiedRequirements,
