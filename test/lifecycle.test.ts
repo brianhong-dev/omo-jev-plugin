@@ -328,3 +328,71 @@ test("records shadow recommendations against executed tool results", async () =>
     await rm(cwd, { recursive: true, force: true });
   }
 });
+
+test("suggests reconsideration only after consecutive low-progress judgments", async () => {
+  // Given a Jev result assessor that observes little progress twice, then improvement.
+  const cwd = await mkdtemp(join(tmpdir(), "omo-jev-progress-"));
+  let requests = 0;
+  const server = Bun.serve({
+    port: 0,
+    fetch() {
+      requests++;
+      return Response.json({
+        model: "jev-1.13.0",
+        answers: { progress: { type: "score", score: requests === 3 ? 1.2 : 0.2 } },
+        usage: { input_tokens: 5, output_tokens: 2 },
+      });
+    },
+  });
+  try {
+    await mkdir(join(cwd, ".omo"));
+    await writeFile(join(cwd, ".omo", "jev-plugin.jsonc"), JSON.stringify({
+      mode: "advise", apiKey: "test-key", endpoint: `http://127.0.0.1:${server.port}`,
+      decisions: {
+        skills: false, nextAction: false, toolDiscovery: false, toolActivation: false,
+        toolPreflight: false, resultAssessment: true, loopDetection: false,
+        completion: false, modelRouting: false, thinkingLevel: false,
+      },
+    }));
+    const runtime = createExtensionRuntime();
+    runtime.appendEntry = () => {};
+    runtime.getActiveTools = () => [];
+    runtime.getAllTools = () => [];
+    const extension = await loadExtensionFromFactory(jevPlugin, cwd, createEventBus(), runtime);
+    const ctx = {
+      cwd, isProjectTrusted: () => true,
+      sessionManager: { getBranch: () => [] },
+      ui: { notify: () => {} },
+      modelRegistry: { getAvailable: () => [] },
+      signal: undefined,
+    };
+    const emit = async (name: string, event: object) => {
+      let result: unknown;
+      for (const handler of extension.handlers.get(name) ?? []) {
+        result = await Reflect.apply(handler, undefined, [event, ctx]);
+      }
+      return result;
+    };
+
+    // When each new tool result drives another judgment.
+    await emit("session_start", { type: "session_start" });
+    await emit("before_agent_start", {
+      type: "before_agent_start", prompt: "Inspect", systemPromptOptions: { skills: [] },
+    });
+    const advice: string[] = [];
+    for (let turnIndex = 0; turnIndex < 4; turnIndex++) {
+      await emit("tool_result", { type: "tool_result", toolName: "read", isError: false, content: [] });
+      await emit("turn_start", { type: "turn_start", turnIndex, timestamp: turnIndex });
+      advice.push(JSON.stringify(await emit("context", { type: "context", messages: [] })) ?? "");
+    }
+
+    // Then the second low score advises a change, improvement resets the streak.
+    expect(advice[0]).not.toContain("little progress");
+    expect(advice[1]).toContain("little progress");
+    expect(advice[2]).not.toContain("little progress");
+    expect(advice[3]).not.toContain("little progress");
+  } finally {
+    server.stop(true);
+    await rm(cwd, { recursive: true, force: true });
+  }
+});

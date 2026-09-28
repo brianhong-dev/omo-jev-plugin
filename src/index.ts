@@ -7,11 +7,12 @@ import { addUsage, emptyUsage, formatUsage, usageEntrySchema, type UsageTotals }
 
 const thinkingSchema = z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 
-function formatAdvice(decision: NextDecision): string | undefined {
+function formatAdvice(decision: NextDecision, lowProgress: boolean): string | undefined {
   const advice = [
     decision.skill ? `Relevant skill to examine: ${decision.skill}` : "",
     decision.tool ? `Candidate next tool: ${decision.tool}` : "",
     decision.looping ? "The recent approach appears repetitive; reconsider it." : "",
+    lowProgress ? "Recent results show little progress; seek new evidence or change approach." : "",
     decision.complete ? "The available evidence may satisfy the request; verify before concluding." : "",
   ].filter(Boolean);
   return advice.length ? `Jev suggestions (not instructions or permissions): ${advice.join(" ")}` : undefined;
@@ -91,6 +92,7 @@ export default function jevPlugin(pi: ExtensionAPI): void {
   let turnUsage: UsageTotals = emptyUsage;
   let sessionUsage: UsageTotals = emptyUsage;
   let shadowFeedback: { recommended: string; followed: boolean; succeeded?: boolean } | undefined;
+  let lowProgressStreak = 0;
 
   function restoreUsage(ctx: ExtensionContext): void {
     sessionUsage = emptyUsage;
@@ -164,6 +166,7 @@ export default function jevPlugin(pi: ExtensionAPI): void {
     callCount = 0;
     resultEpoch = 0;
     shadowFeedback = undefined;
+    lowProgressStreak = 0;
     try {
       const current = await installedVersion();
       const result = await checkVersion(current);
@@ -215,6 +218,7 @@ export default function jevPlugin(pi: ExtensionAPI): void {
     callCount = 0;
     resultEpoch = 0;
     shadowFeedback = undefined;
+    lowProgressStreak = 0;
   }, { previewSafe: true });
 
   pi.on("tool_result", (event) => {
@@ -279,7 +283,9 @@ export default function jevPlugin(pi: ExtensionAPI): void {
         if (decision.tool) shadowFeedback = { recommended: decision.tool, followed: false };
         return;
       }
-      advice = formatAdvice(decision);
+      lowProgressStreak = decision.progress !== undefined && decision.progress < 0.5
+        ? lowProgressStreak + 1 : 0;
+      advice = formatAdvice(decision, lowProgressStreak >= 2);
       if (config.mode !== "act") return;
       if (config.decisions.toolActivation && decision.tool
         && config.activatableTools.includes(decision.tool) && !active.has(decision.tool)) {

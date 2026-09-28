@@ -65,7 +65,7 @@ Jev API 키는 `~/.omo/jev-plugin.jsonc`의 `apiKey` 또는 **OmO/senpi를 실�
 | --- | --- |
 | `skills` | 로드된 스킬 목록에서 적합한 스킬을 제안합니다. |
 | `nextAction`, `toolDiscovery` | 현재 활성 도구 중 다음에 쓸 도구를 제안합니다. 두 항목은 현재 동일한 도구 선택 질문을 켭니다. `tool_search`도 활성 도구라면 후보에 포함될 수 있습니다. |
-| `resultAssessment` | 최근 도구 결과의 진행도를 평가합니다. 현재 점수는 에이전트 제안이나 실행 제어에 반영되지 않습니다. |
+| `resultAssessment` | 최근 도구 결과의 진행도를 평가합니다. 낮은 점수(0.5 미만)가 연속 두 번 나오면 새 근거를 찾거나 접근 방식을 바꾸도록 제안합니다. 실행을 제어하지는 않습니다. |
 | `loopDetection` | 최근 결과가 같은 실패를 반복하는지 판단해 접근 방식 재검토를 제안합니다. |
 | `completion` | 완료 가능성을 제안합니다. 작업을 강제로 끝내지 않습니다. |
 | `toolActivation` | `act`에서 `activatableTools`에 지정한 도구만 추가로 활성화할 수 있습니다. |
