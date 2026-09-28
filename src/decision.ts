@@ -4,6 +4,28 @@ import { z } from "zod";
 import { resolveApiKey, type PluginConfig } from "./config.js";
 
 export type Candidate = { readonly name: string; readonly description: string; readonly filePath?: string };
+export function redactText(text: string, config: PluginConfig): string {
+  let result = text;
+  for (const { index, value } of config.redactValues
+    .map((value, index) => ({ value, index }))
+    .sort((a, b) => b.value.length - a.value.length)) {
+    result = result.replaceAll(value, `__JEV_REDACTED_${index}__`);
+  }
+  for (const [index, pattern] of config.redactPatterns.entries()) {
+    result = result.replace(new RegExp(pattern, "g"), `__JEV_REDACTED_${config.redactValues.length + index}__`);
+  }
+  return result;
+}
+
+function redactJson(value: unknown, config: PluginConfig): unknown {
+  if (typeof value === "string") return redactText(value, config);
+  if (Array.isArray(value)) return value.map((item: unknown) => redactJson(item, config));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, entry]) =>
+      [redactText(key, config), redactJson(entry, config)]));
+  }
+  return value;
+}
 export type NextState = {
   readonly request: string;
   readonly lastResults: readonly string[];
@@ -51,17 +73,20 @@ function select(
   const fit = noulAnswer.safeParse(answers[`${key}Fits`]);
   if (!result.success || !fit.success) return;
   const { choice, confidence, probabilities } = result.data;
-  if (choice === "__none__" || !candidates.some(({ name }) => name === choice)) return;
+  const matching = candidates.filter(({ name }) => redactText(name, config) === choice);
+  if (choice === "__none__" || matching.length !== 1) return;
   if (confidence < config.thresholds.confidence || fit.data.noul < config.thresholds.fit) return;
   if (probabilities[choice] === undefined) return;
-  return choice;
+  return matching[0]?.name;
 }
 
-function addChoice(questions: Questions, key: string, candidates: readonly Candidate[]): void {
+function addChoice(questions: Questions, key: string, candidates: readonly Candidate[], config: PluginConfig): void {
   if (candidates.length === 0) return;
   const criteria: Record<string, string> = { __none__: "None of these options is appropriate" };
   for (const candidate of candidates.slice(0, 254)) {
-    if (candidate.name !== "__none__") criteria[candidate.name] = candidate.description;
+    if (candidate.name !== "__none__") {
+      criteria[redactText(candidate.name, config)] = redactText(candidate.description, config);
+    }
   }
   questions[key] = { type: "choice", instructions: `Which ${key} best serves the current task?`, criteria };
   questions[`${key}Fits`] = {
@@ -93,11 +118,11 @@ export class JevDecider {
   async next(state: NextState, signal?: AbortSignal, availableCalls = 1): Promise<NextDecision> {
     const questions: Questions = {};
     if (this.config.decisions.nextAction || this.config.decisions.toolDiscovery) {
-      addChoice(questions, "tool", state.tools);
+      addChoice(questions, "tool", state.tools, this.config);
     }
-    if (this.config.decisions.skills) addChoice(questions, "skill", state.skills);
-    if (this.config.decisions.modelRouting) addChoice(questions, "model", state.models);
-    if (this.config.decisions.thinkingLevel) addChoice(questions, "thinking", state.thinking);
+    if (this.config.decisions.skills) addChoice(questions, "skill", state.skills, this.config);
+    if (this.config.decisions.modelRouting) addChoice(questions, "model", state.models, this.config);
+    if (this.config.decisions.thinkingLevel) addChoice(questions, "thinking", state.thinking, this.config);
     if (state.lastResults.length > 0) {
       if (this.config.decisions.loopDetection) {
         questions["looping"] = {
@@ -123,8 +148,9 @@ export class JevDecider {
     this.onRequest?.();
     const result = responseSchema.parse(await this.client.systemOne({
       state: {
-        request: state.request.slice(0, this.config.limits.stateChars),
-        lastResults: state.lastResults.map((item) => item.slice(0, this.config.limits.stateChars)),
+        request: redactText(state.request, this.config).slice(0, this.config.limits.stateChars),
+        lastResults: state.lastResults.map((item) =>
+          redactText(item, this.config).slice(0, this.config.limits.stateChars)),
       },
       questions,
     }, signal ? { signal } : {}));
@@ -139,21 +165,22 @@ export class JevDecider {
       const ranked = choiceAnswer.safeParse(answers["skill"]);
       if (ranked.success) {
         const shortlist = Object.entries(ranked.data.probabilities)
-          .filter(([name]) => state.skills.some((candidate) => candidate.name === name))
+          .filter(([name]) => state.skills.some((candidate) => redactText(candidate.name, this.config) === name))
           .sort((a, b) => b[1] - a[1])
           .slice(0, 3)
-          .flatMap(([name]) => state.skills.filter((candidate) => candidate.name === name));
+          .flatMap(([name]) => state.skills.filter((candidate) =>
+            redactText(candidate.name, this.config) === name));
         const detailed = await Promise.all(shortlist.map(async (candidate) => ({
           name: candidate.name,
           description: candidate.filePath
-            ? `${candidate.description}\n${(await readFile(candidate.filePath, "utf8")).slice(0, 500)}`
+            ? `${candidate.description}\n${redactText(await readFile(candidate.filePath, "utf8"), this.config).slice(0, 500)}`
             : candidate.description,
         })));
         const rerankQuestions: Questions = {};
-        addChoice(rerankQuestions, "skill", detailed);
+        addChoice(rerankQuestions, "skill", detailed, this.config);
         this.onRequest?.();
         const reranked = responseSchema.parse(await this.client.systemOne({
-          state: { request: state.request.slice(0, this.config.limits.stateChars) },
+          state: { request: redactText(state.request, this.config).slice(0, this.config.limits.stateChars) },
           questions: rerankQuestions,
         }, signal ? { signal } : {}));
         this.onUsage?.(reranked.usage, reranked.model);
@@ -181,9 +208,10 @@ export class JevDecider {
   ): Promise<number> {
     const response = responseSchema.parse(await this.client.systemOne({
       state: {
-        request: request.slice(0, this.config.limits.stateChars),
-        tool,
-        input: JSON.stringify(input).slice(0, this.config.limits.stateChars),
+        request: redactText(request, this.config).slice(0, this.config.limits.stateChars),
+        tool: redactText(tool, this.config),
+        input: JSON.stringify(redactJson(JSON.parse(JSON.stringify(input)), this.config))
+          .slice(0, this.config.limits.stateChars),
       },
       questions: {
         outsideScope: {

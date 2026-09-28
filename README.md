@@ -86,6 +86,7 @@ Jev 판단은 사용자 요청이 시작될 때만이 아니라, **도구 결과
 - `thresholds.fit`, `thresholds.confidence`, `thresholds.risk`: 적합도, 선택 확신도, 호출 차단 기준입니다. 기본값은 각각 `0.6`, `0.65`, `0.8`입니다.
 - `preflightOnError`: 호출 사전 검사에 실패했을 때 `act` 모드에서 호출을 `allow`(기본값)할지 `block`할지 선택합니다.
 - `skillRerank`: 켜면 스킬이 24개 이상일 때 1차 후보 세 개의 `SKILL.md` 앞 500자까지 읽어 추가 Jev 호출로 재선별합니다. 기본값은 `false`이며 스킬 본문 일부가 TypeSafe에 전송됩니다. 남은 호출 한도가 한 번뿐이면 재선별을 건너뜁니다.
+- `redactValues`, `redactPatterns`: Jev로 보내는 요청·도구 결과·도구 인자·후보 설명에서 지정한 문자열 또는 정규식 일치 부분을 일정한 자리표시자로 치환합니다. 기본값은 빈 목록입니다. `redactPatterns`는 JavaScript 정규식 본문 목록이며 빈 문자열과 일치하는 패턴은 허용하지 않습니다. 후보 이름이 치환되어 서로 구분되지 않으면 제안을 보류합니다.
 
 ## 전송되는 데이터와 문제 해결
 

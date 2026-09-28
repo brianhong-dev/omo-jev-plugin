@@ -184,3 +184,19 @@ test("rejects malformed JSONC instead of silently disabling the plugin", async (
   // Then the error identifies the file.
   await expect(result).rejects.toBeInstanceOf(ConfigurationError);
 });
+
+test("rejects malformed redaction patterns at the config boundary", async () => {
+  // Given a pattern that cannot be compiled.
+  const { cwd, globalPath } = await fixture();
+  await writeFile(globalPath, '{ "redactPatterns": ["("] }');
+  // When the configuration is loaded, the malformed expression is rejected.
+  await expect(loadConfig(cwd, false, globalPath)).rejects.toBeInstanceOf(ConfigurationError);
+});
+
+test("rejects redaction patterns that match empty text", async () => {
+  // Given a pattern that would replace at every position.
+  const { cwd, globalPath } = await fixture();
+  await writeFile(globalPath, '{ "redactPatterns": ["a*"] }');
+  // When the configuration is loaded, the unbounded match is rejected.
+  await expect(loadConfig(cwd, false, globalPath)).rejects.toBeInstanceOf(ConfigurationError);
+});

@@ -33,6 +33,8 @@ function config(): PluginConfig {
     includeToolOutput: false,
     includeToolErrors: false,
     skillRerank: false,
+    redactValues: [],
+    redactPatterns: [],
     preflightOnError: "allow",
   };
 }
@@ -228,6 +230,7 @@ test("reranks a large skill roster with bounded local skill details", async () =
   active.decisions.skills = true;
   active.decisions.nextAction = false;
   active.skillRerank = true;
+  active.redactValues = ["SECRET456"];
   const server = Bun.serve({
     port: 0,
     async fetch(req) {
@@ -254,7 +257,8 @@ test("reranks a large skill roster with bounded local skill details", async () =
     },
   });
   try {
-    await writeFile(filePath, "The skill-1 details explain its precise use case.");
+    const detail = "The skill-1 details explain its precise use case.";
+    await writeFile(filePath, `${detail}${"x".repeat(500 - detail.length - 3)}SECRET456`);
     const client = new TypeSafeClient({
       apiKey: "test-key", baseURL: `http://127.0.0.1:${server.port}`, retry: { maxRetries: 0 },
     });
@@ -271,9 +275,82 @@ test("reranks a large skill roster with bounded local skill details", async () =
     expect(requests).toHaveLength(2);
     expect(counted).toBe(2);
     expect(JSON.stringify(requests[1])).toContain("precise use case");
+    expect(JSON.stringify(requests[1])).not.toContain("SEC");
     expect(JSON.stringify(requests)).not.toContain(dir);
   } finally {
     server.stop(true);
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("masks configured exact values and patterns before Jev transport", async () => {
+  // Given sensitive data in request, recent results, candidate descriptions, and preflight input.
+  const sent: string[] = [];
+  const server = Bun.serve({
+    port: 0,
+    async fetch(req) {
+      sent.push(await req.text());
+      return Response.json({
+        model: "jev-1.13.0",
+        answers: {
+          tool: { type: "choice", choice: "read", confidence: 0.9, probabilities: { read: 0.9, __none__: 0.1 } },
+          toolFits: { type: "noul", noul: 0.9 },
+          outsideScope: { type: "noul", noul: 0.1 },
+        },
+        usage: { input_tokens: 5, output_tokens: 2 },
+      });
+    },
+  });
+  const active = config();
+  active.redactValues = ["SECRET456", 'quote"value'];
+  active.redactPatterns = ["account-[0-9]+"];
+  const client = new TypeSafeClient({
+    apiKey: "test-key", baseURL: `http://127.0.0.1:${server.port}`, retry: { maxRetries: 0 },
+  });
+  try {
+    // When both turn and preflight judgments reach the real SDK transport.
+    const decider = new JevDecider(active, client);
+    await decider.next({
+      ...state,
+      request: "Inspect SECRET456 for account-5432",
+      lastResults: ["read: error SECRET456"],
+      tools: [{ name: "read", description: "Inspect account-5432" }],
+    });
+    await decider.risk("Inspect SECRET456", "read", {
+      path: "account-5432", value: 'quote"value', SECRET456: "SECRET456",
+    });
+
+    // Then every configured value is replaced consistently in outbound data.
+    expect(sent).toHaveLength(2);
+    expect(sent.join(" ")).not.toContain("SECRET456");
+    expect(sent.join(" ")).not.toContain("account-5432");
+    expect(sent.join(" ")).not.toContain("quote");
+    expect(sent[0]).toContain("__JEV_REDACTED_0__");
+    expect(sent[1]).toContain("__JEV_REDACTED_0__");
+  } finally {
+    server.stop(true);
+  }
+});
+
+test("maps a masked candidate identifier back to its local tool", async () => {
+  // Given a tool name that contains a configured value to redact.
+  const { server, client } = serverFor({
+    tool: {
+      type: "choice", choice: "__JEV_REDACTED_0__-tool", confidence: 0.9,
+      probabilities: { "__JEV_REDACTED_0__-tool": 0.9, __none__: 0.1 },
+    },
+    toolFits: { type: "noul", noul: 0.9 },
+  });
+  const active = config();
+  active.redactValues = ["SECRET456"];
+  try {
+    // When Jev selects the masked identifier.
+    const result = await new JevDecider(active, client).next({
+      ...state, tools: [{ name: "SECRET456-tool", description: "Sensitive tool" }],
+    });
+    // Then only the known local identifier is suggested.
+    expect(result.tool).toBe("SECRET456-tool");
+  } finally {
+    server.stop(true);
   }
 });
