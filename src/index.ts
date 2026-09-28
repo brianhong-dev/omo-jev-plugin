@@ -1,5 +1,7 @@
 import { noticeEntryRenderer, type ExtensionAPI, type ExtensionContext } from "@code-yeongyu/senpi";
+import { Type } from "typebox";
 import { z } from "zod";
+import { CodeSearchError, searchCode } from "./code-search.js";
 import { ConfigurationError, decisionModel, loadConfig, resolveApiKey, type PluginConfig } from "./config.js";
 import { JevDecider, redactText, type Candidate, type NextDecision } from "./decision.js";
 import { requirementsFromRequest, verificationKind, type VerificationResult } from "./evidence.js";
@@ -139,6 +141,7 @@ export default function jevPlugin(pi: ExtensionAPI): void {
   let requirementsTruncated = false;
   let verificationResults: VerificationResult[] = [];
   let recentAttempts: Attempt[] = [];
+  let searchRegistered = false;
 
   function restoreUsage(ctx: ExtensionContext): void {
     sessionUsage = emptyUsage;
@@ -251,6 +254,44 @@ export default function jevPlugin(pi: ExtensionAPI): void {
           turnUsage = addUsage(turnUsage, usage, model);
           sessionUsage = addUsage(sessionUsage, usage, model);
         }, () => { callCount++; });
+      }
+      if (decider && config.experimentalCodeSearch && ctx.isProjectTrusted()) {
+        if (!searchRegistered) {
+          pi.registerTool({
+            name: "jev_code_search",
+            label: "Jev Code Search (experimental)",
+            description: "Find relevant source in this trusted Git project by behavior; returns bounded verbatim excerpts and paths.",
+            exposure: "eval",
+            allowLazyActivation: false,
+            parameters: Type.Object({
+              query: Type.String({ minLength: 1, maxLength: 500 }),
+              path: Type.Optional(Type.String({ description: "Relative project directory to narrow the search" })),
+            }),
+            async execute(_id, params, signal, _onUpdate, toolCtx) {
+              if (!toolCtx.isProjectTrusted() || !canCall() || !config?.experimentalCodeSearch || !decider) {
+                return { content: [{ type: "text", text: "Jev code search is unavailable for this session." }], details: {} };
+              }
+              if (config.limits.maxCallsPerAgentRun - callCount < 2) {
+                return { content: [{ type: "text", text: "Jev code search needs two remaining decision calls." }], details: {} };
+              }
+              const currentDecider = decider;
+              try {
+                const text = await searchCode({
+                  cwd: toolCtx.cwd, query: params.query, scope: params.path, signal,
+                }, (query, candidates, searchSignal) => currentDecider.rankCode(query, candidates, searchSignal));
+                return { content: [{ type: "text", text }], details: {} };
+              } catch (error) {
+                if (!(error instanceof CodeSearchError)) throw error;
+                return { content: [{ type: "text", text: error.message }], details: {} };
+              }
+            },
+          });
+          searchRegistered = true;
+        } else if (!pi.getActiveTools().includes("jev_code_search")) {
+          pi.setActiveTools([...pi.getActiveTools(), "jev_code_search"]);
+        }
+      } else if (searchRegistered && pi.getActiveTools().includes("jev_code_search")) {
+        pi.setActiveTools(pi.getActiveTools().filter((name) => name !== "jev_code_search"));
       }
     } catch (error) {
       if (error instanceof ConfigurationError || error instanceof Error) {

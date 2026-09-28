@@ -31,6 +31,29 @@ test("creates a private global configuration with network decisions off", async 
   expect(config.mode).toBe("off");
   expect(JSON.parse(await readFile(globalPath, "utf8"))).toEqual(config);
   expect((await stat(globalPath)).mode & 0o777).toBe(0o600);
+  expect(config.experimentalCodeSearch).toBe(false);
+});
+
+test("allows trusted opt-in search without session routing changes", async () => {
+  // Given a project requesting code search without model or tool switching.
+  const { cwd, globalPath, projectPath } = await fixture();
+  await writeFile(globalPath, '{"mode":"advise"}');
+  await writeFile(projectPath, '{"experimentalCodeSearch":true}');
+  // When the trusted configuration is loaded.
+  const config = await loadConfig(cwd, true, globalPath);
+  // Then the feature is enabled without changing its default for untrusted projects.
+  expect(config.experimentalCodeSearch).toBe(true);
+  expect((await loadConfig(cwd, false, globalPath)).experimentalCodeSearch).toBe(false);
+});
+
+test("rejects search combined with dynamic model, thinking, or tool controls", async () => {
+  // Given an opt-in search with a control that could change the cached prefix.
+  const { cwd, globalPath, projectPath } = await fixture();
+  await writeFile(globalPath, '{"mode":"act"}');
+  await writeFile(projectPath, '{"experimentalCodeSearch":true,"decisions":{"modelRouting":true}}');
+  // When configuration is parsed.
+  await expect(loadConfig(cwd, true, globalPath)).rejects.toThrow(/Experimental code search/);
+  // Then no incompatible effective configuration is returned.
 });
 
 test("creates a missing configuration directory without creating a project override", async () => {

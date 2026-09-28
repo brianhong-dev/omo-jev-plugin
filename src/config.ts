@@ -64,6 +64,7 @@ const partialProviderSchema = z.strictObject({
 const configSchema = z.strictObject({
   enabled: z.boolean().default(true),
   mode: z.enum(["off", "shadow", "advise", "act"]).default("off"),
+  experimentalCodeSearch: z.boolean().default(false),
   provider: providerSchema.prefault({}),
   models: z.array(z.string().min(1)).max(16).default([]),
   activatableTools: z.array(z.string().min(1)).max(254).default([]),
@@ -86,6 +87,10 @@ const configSchema = z.strictObject({
   redactValues: z.array(z.string().min(4)).max(32).default([]),
   redactPatterns: z.array(redactPatternSchema).max(16).default([]),
   preflightOnError: z.enum(["allow", "block"]).default("allow"),
+}).refine((value) => !value.experimentalCodeSearch
+  || (!value.decisions.toolActivation && !value.decisions.modelRouting && !value.decisions.thinkingLevel), {
+  message: "Experimental code search requires toolActivation, modelRouting, and thinkingLevel to be off",
+  path: ["experimentalCodeSearch"],
 });
 
 type ConfigInput = z.input<typeof configSchema>;
@@ -129,6 +134,7 @@ async function readConfig(path: string, migrateDefaults = false): Promise<Config
   const result = z.strictObject({
     enabled: z.boolean().optional(),
     mode: z.enum(["off", "shadow", "advise", "act"]).optional(),
+    experimentalCodeSearch: z.boolean().optional(),
     provider: partialProviderSchema.optional(),
     model: z.string().min(1).optional(),
     endpoint: z.url().optional(),

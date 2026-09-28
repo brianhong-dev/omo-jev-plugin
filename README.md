@@ -1,26 +1,28 @@
 # omo-jev-plugin
 
-[Jev](https://docs.typesafe.ai/) 또는 OpenRouter의 [Span-01](https://openrouter.ai/respan/span-01)·[Span-01 Lite](https://openrouter.ai/respan/span-01-lite)의 구조화된 판단을 [OmO](https://www.npmjs.com/package/omo-ai) / senpi 에이전트에 연결하는 플러그인입니다. 작업 중 스킬과 다음 도구의 적합성을 평가하고, 반복이나 완료 가능성을 살펴 에이전트에 짧은 제안을 전달합니다. 판단 모델이 도구를 직접 실행하거나 senpi의 권한 검사를 대신하지는 않습니다.
+English | [한국어](./README.ko.md)
 
-## 설치
+This plugin connects structured decisions from [Jev](https://docs.typesafe.ai/) or OpenRouter's [Span-01](https://openrouter.ai/respan/span-01) and [Span-01 Lite](https://openrouter.ai/respan/span-01-lite) to [OmO](https://www.npmjs.com/package/omo-ai) / senpi agents. It evaluates which skills and next tools fit a task, looks for repetition or possible completion, and gives the agent brief suggestions. The decision model neither executes tools nor replaces senpi's permission checks.
 
-OmO 또는 senpi에서 패키지를 설치합니다.
+## Installation
+
+Install the package in OmO or senpi:
 
 ```sh
 omo install npm:omo-jev-plugin
 ```
 
-플러그인 로딩 시 npm에 새 버전이 있으면 설정 파일과 API 키를 확인하기 전에 UI로 업데이트를 안내합니다. `omo update npm:omo-jev-plugin`으로 업데이트할 수 있습니다. npm 조회가 실패해도 플러그인 시작은 계속됩니다.
+When the plugin loads, it checks npm for a newer version and announces an available update in the UI before checking configuration or API keys. Run `omo update npm:omo-jev-plugin` to update. A failed npm lookup does not prevent startup.
 
-API 키는 `~/.omo/jev-plugin.jsonc`의 `provider.jev_compatible.apiKey` 또는 `provider.respan-ai.apiKey`에 공급자별로 설정합니다. 없으면 각각 **OmO/senpi를 실행하는 프로세스의 환경 변수** `TYPESAFE_API_KEY` 또는 `OPENROUTER_API_KEY`를 사용합니다. 공급자별 `endpoint`도 설정할 수 있습니다. 프로젝트별 설정에 키를 넣었다면 파일을 공유할 때 주의하세요. 선택한 공급자의 키가 없으면 로딩 직후 경고하고 판단 요청을 보내지 않습니다.
+Set the provider-specific API key in `~/.omo/jev-plugin.jsonc` under `provider.jev_compatible.apiKey` or `provider.respan-ai.apiKey`. If absent, the plugin uses `TYPESAFE_API_KEY` or `OPENROUTER_API_KEY`, respectively, from the **process running OmO/senpi**. Each provider also supports an `endpoint`. Be careful when sharing project configuration containing a key. If the selected provider has no key, the plugin warns on load and makes no decision requests.
 
-설치만으로 판단 API를 호출하지는 않습니다. 플러그인을 처음 로드할 때 기본 설정 파일이 자동 생성되며, 사용하려면 아래처럼 모드를 변경해야 합니다.
+Installation alone does not call the decision API. On first load, the plugin creates a default configuration file in `off` mode. Change its mode as described below to enable it.
 
-## 설정
+## Configuration
 
-처음 로드하면 `~/.omo/jev-plugin.jsonc`가 `off` 모드의 기본값으로 생성됩니다. 기존 전역 설정의 최상위 `model`, `apiKey`, `openrouterApiKey`, `endpoint`는 로드할 때 `provider` 아래로 옮깁니다. 파일을 바꾸기 전에 원본을 `jev-plugin.jsonc.bak.<타임스탬프>`에 백업하며, `_migrations`에 적용 이력을 기록합니다. 기존 설정값과 주석은 가능한 한 유지합니다. 프로젝트별 설정은 상속에 필요한 항목만 적으며 자동으로 채우지 않습니다. [`설정 예시`](./jev-plugin.example.jsonc)를 참고하세요. 이 파일은 OmO의 `omo.jsonc`와 별개입니다. 설정 변경 후에는 새 세션을 시작하거나 확장을 다시 로드하세요.
+On first load, `~/.omo/jev-plugin.jsonc` is created with `mode: "off"`. Legacy top-level `model`, `apiKey`, `openrouterApiKey`, and `endpoint` settings are moved under `provider` when loaded. Before changing the file, the plugin backs it up as `jev-plugin.jsonc.bak.<timestamp>` and records the migration in `_migrations`, preserving existing settings and comments where possible. A project configuration contains only the fields it needs to override; it is not filled in automatically. See the [example configuration](./jev-plugin.example.jsonc). This file is separate from OmO's `omo.jsonc`. Start a new session or reload the extension after changing settings.
 
-가장 간단한 설정은 다음과 같습니다.
+The simplest configuration is:
 
 ```jsonc
 {
@@ -42,9 +44,9 @@ API 키는 `~/.omo/jev-plugin.jsonc`의 `provider.jev_compatible.apiKey` 또는 
 }
 ```
 
-### 판단 공급자 선택
+### Decision provider
 
-`provider.selected`는 `jev_compatible`(기본값) 또는 `respan-ai`입니다. 각 공급자의 `model`, `apiKey`, `endpoint`는 해당 공급자 항목 안에 둡니다. 모델 ID를 생략하면 각각 `jev-1.13.0`, `respan/span-01-lite`를 사용합니다. 예를 들어 Respan을 쓰려면:
+`provider.selected` is `jev_compatible` (the default) or `respan-ai`. Each provider has its own `model`, `apiKey`, and `endpoint`. When the model ID is omitted, the defaults are `jev-1.13.0` and `respan/span-01-lite`, respectively. To use Respan:
 
 ```jsonc
 {
@@ -56,62 +58,82 @@ API 키는 `~/.omo/jev-plugin.jsonc`의 `provider.jev_compatible.apiKey` 또는 
 }
 ```
 
-`provider.respan-ai.apiKey`가 없으면 `OPENROUTER_API_KEY`를 사용합니다. 전역 설정에 두 공급자의 옵션을 보관하고 신뢰된 프로젝트에서는 `provider.selected`만 덮어쓸 수 있습니다.
+If `provider.respan-ai.apiKey` is absent, the plugin uses `OPENROUTER_API_KEY`. You can keep options for both providers in the global configuration and override only `provider.selected` in a trusted project.
 
-`jev_compatible`은 `noul`, `choice`, `score`를 직접 사용합니다. `respan-ai`는 기본적으로 OpenRouter의 무료 **Span-01 Lite**로 동작하며, 현재 실제 API가 허용하는 `noul`만 직접 사용합니다. 플러그인은 선택지나 점수 단계마다 `noul`을 평가해 결과를 조합합니다. 따라서 Jev의 직접 선택·점수와 결과가 달라질 수 있습니다. `respan-ai.model`을 지정하면 기본 모델 ID를 바꿀 수 있지만 판단 방식은 공급자 기준으로 유지됩니다. `provider` 설정은 플러그인의 판단 모델용이며, 최상위 `models`는 에이전트 세션 모델 라우팅 후보입니다.
+`jev_compatible` uses `noul`, `choice`, and `score` directly. `respan-ai` defaults to the free **Span-01 Lite** on OpenRouter and directly uses only the `noul` primitive currently accepted by its API. The plugin evaluates each option or score level with `noul` and combines the results, so its selections and scores can differ from Jev's direct responses. Setting `respan-ai.model` changes the default model ID but not the provider-specific decision method. The `provider` section configures the plugin's decision model; top-level `models` lists candidates for routing the agent session model.
 
-프로젝트별 설정은 해당 프로젝트의 `.omo/jev-plugin.jsonc`에 직접 넣을 수 있습니다. 프로젝트 파일은 자동 생성되지 않고, 프로젝트가 신뢰된 경우에만 읽으며 전역 설정을 덮어씁니다. `provider`의 공급자별 항목과 `decisions`, `display`, `limits`, `thresholds`는 항목별로 병합되고 나머지는 프로젝트 값으로 교체됩니다. 알 수 없는 설정 항목이나 잘못된 JSONC가 있으면 플러그인을 비활성화하고 경고를 표시합니다.
+You can place a project override in `.omo/jev-plugin.jsonc`. The plugin does not create it and reads it only when the project is trusted. Provider-specific entries, `decisions`, `display`, `limits`, and `thresholds` are merged field by field; other project values replace global values. An unknown setting or invalid JSONC disables the plugin and displays a warning.
 
-| 모드 | 동작 |
+| Mode | Behavior |
 | --- | --- |
-| `off` | Jev를 호출하지 않습니다. 기본값입니다. |
-| `shadow` | 판단을 세션에 기록하지만 에이전트 동작은 바꾸지 않습니다. |
-| `advise` | 판단 결과 중 스킬·도구 후보, 반복 및 완료 가능성을 에이전트에 제안합니다. |
-| `act` | `advise`에 더해, 개별적으로 활성화한 도구 활성화·호출 차단·모델 및 사고 수준 선택을 적용합니다. |
+| `off` | Do not call Jev. This is the default. |
+| `shadow` | Record decisions in the session without changing agent behavior. |
+| `advise` | Suggest skills and tool candidates, repetition, and possible completion to the agent. |
+| `act` | In addition to `advise`, apply individually enabled tool activation, call blocking, model routing, and thinking-level selection. |
 
-`enabled: false`는 모드와 관계없이 플러그인의 판단을 끕니다. 에이전트가 명시적으로 호출한 스킬은 자동 스킬 제안보다 우선합니다. Jev가 적합한 후보를 찾지 못하거나 응답에 확신이 부족하면 후보를 제안하지 않습니다.
+`enabled: false` disables decisions regardless of mode. An explicitly invoked skill takes precedence over automatic skill suggestions. When Jev finds no suitable candidate or its confidence is too low, the plugin makes no recommendation.
 
-`display.startup`은 키와 설정을 정상 로드해 활성화했을 때 UI에 모드, 모델, API 주소, 키 출처(키 값 제외), 켜진 판단 항목과 호출 제한을 일회성 알림으로 보여줍니다. 기본값은 `true`입니다. `display.decisions`는 각 턴의 Jev 선택과 도구 호출 사전 검사 결과를 UI에 표시합니다. 알림이 잦을 수 있어 기본값은 `false`이며, `shadow` 모드에서도 판단 내용을 관찰할 수 있습니다. 두 옵션과 별개로 Jev가 활성화된 세션은 매 턴 종료 시 입력·출력 토큰과 예상 비용을 해당 턴 및 세션 누계로 UI 이력에 기록합니다. 이 기록은 모델 입력에 포함되지 않으며, 세션을 다시 열어도 누계를 이어갑니다. 키 누락·오류 경고는 표시 옵션과 관계없이 표시됩니다.
+With a valid key and active configuration, `display.startup` shows a one-time UI notice with the mode, model, API origin, key source (never the key itself), enabled decisions, and call limit. It defaults to `true`. `display.decisions` shows each turn's Jev selection and tool-call preflight result; it defaults to `false` because these notices can be frequent, but also works in `shadow` mode. Independently of both options, an active Jev session records input and output tokens and estimated cost for each turn and the session total in UI history. Those records are not sent to the agent model, and the session total continues when a session is reopened. Missing-key and error warnings are shown regardless of display settings.
 
-`shadow` 모드에서는 도구 추천 여부, 첫 실제 도구, 추천 도구의 첫 결과, 해당 턴의 성공한 테스트·타입 검사·빌드 명령 및 연속된 동일 도구 오류 횟수를 `Jev shadow` 이력 카드로 남깁니다. `/jev-shadow-report` 명령은 현재 세션 브랜치의 이력을 다시 집계해 추천 수, 실제 사용 수, 추천 도구 첫 결과 성공 수, 추천을 따른 뒤 성공한 검사 명령 수, 첫 도구가 추천과 달랐던 횟수, 연속 오류 호출 수를 보여줍니다. 검사 명령은 알려진 `bun`/`npm` 테스트·빌드·타입 검사 명령에 한하며, 사용자 요청 전체의 검증 성공을 뜻하지 않습니다. 이 수치는 `shadow`에서 관찰한 행동과 결과일 뿐, Jev를 실제 적용했을 때와의 인과적 성능 차이나 불필요한 호출임을 증명하지 않습니다. 스킬 로드 여부는 포함되지 않습니다.
+In `shadow` mode, a `Jev shadow` history card records whether a tool was recommended, the first tool actually used, its first result when recommended, successful test/type-check/build commands in that turn, and consecutive same-tool errors. `/jev-shadow-report` aggregates the current session branch's recommendations, actual use, first-result successes, successful checks after following a recommendation, differing first tools, and repeated-error calls. It recognizes known `bun`/`npm` test, build, and type-check commands; it does not establish that the entire user request was verified. These are observations of `shadow` behavior, not causal evidence that applying Jev would avoid calls or improve outcomes. Skill loading is not included.
 
-예상 비용은 API 응답의 `usage.cost`가 있으면 그 값을 사용합니다. 그렇지 않으면 [TypeSafe Jev 1.13 공개 요금](https://docs.typesafe.ai/models)인 입력 100만 토큰당 $0.042, [Span-01 공개 요금](https://openrouter.ai/respan/span-01)인 입력 100만 토큰당 $0.02, Span-01 Lite 무료 요금을 적용합니다(출력 무료). 알 수 없는 모델은 비용을 `unavailable`로 표시합니다. 실패한 API 요청에는 사용량 정보가 없어 집계할 수 없습니다.
+Estimated cost uses the API response's `usage.cost` when present. Otherwise it uses the public [TypeSafe Jev 1.13 price](https://docs.typesafe.ai/models) of $0.042 per million input tokens, the [Span-01 price](https://openrouter.ai/respan/span-01) of $0.02 per million input tokens, or the free Span-01 Lite price (output is free). Unknown models show `unavailable`. Failed API requests provide no usage data and cannot be counted.
 
-### 판단 범위
+### Decision scope
 
-`decisions`에서 필요한 항목을 선택합니다. `skills`, `nextAction`, `toolDiscovery`, `resultAssessment`, `loopDetection`, `completion`의 기본값은 `true`이고 나머지는 `false`입니다.
+Enable only the decisions you need. `skills`, `nextAction`, `toolDiscovery`, `resultAssessment`, `loopDetection`, and `completion` default to `true`; the others default to `false`.
 
-| 항목 | 사용 시 동작 |
+| Setting | Behavior when enabled |
 | --- | --- |
-| `skills` | 로드된 스킬 목록에서 적합한 스킬을 제안합니다. |
-| `nextAction` | 현재 사용 가능한 실행 도구 중 다음에 쓸 도구를 제안합니다. `tool_search`는 일반 실행 후보에서 제외합니다. |
-| `toolDiscovery` | `tool_search`가 실제로 활성화되어 있고 기존 도구 중 적합한 후보가 없을 때, 새 도구 검색을 제안합니다. Jev가 검색을 직접 실행하지는 않습니다. |
-| `resultAssessment` | 최근 도구 결과의 진행도를 평가합니다. 낮은 점수(0.5 미만)가 연속 두 번 나오면 최근 도구와 실패 유형을 짚고 최근 네 결과에서 쓰지 않은 활성 도구로 근거를 찾도록 제안합니다. 실행을 제어하지는 않습니다. |
-| `loopDetection` | 최근 결과가 같은 실패를 반복하는지 판단해 누락된 경로·권한·타임아웃·HTTP 오류 등 관찰된 실패 유형에 맞춘 점검 또는 대체 도구를 제안합니다. |
-| `completion` | 사용자 요청의 번호·글머리표 항목(없으면 요청 전체)마다 Jev가 성공한 검사 결과 ID를 직접 연결한 경우에만 완료 근거 후보를 제시합니다. 매핑되지 않은 항목이 있으면 추가 검증을 요청하며, 작업을 강제로 끝내지 않습니다. |
-| `toolActivation` | `act`에서 `activatableTools`에 지정한 도구만 추가로 활성화할 수 있습니다. |
-| `toolPreflight` | `act`에서 제안된 도구 호출이 요청 범위 밖이라고 판단되면 실행 직전에 차단할 수 있습니다. |
-| `modelRouting` | `act`에서 `models`에 나열한 사용 가능한 모델 중 세션 모델을 선택할 수 있습니다. |
-| `thinkingLevel` | `act`에서 세션의 사고 수준을 선택할 수 있습니다. |
+| `skills` | Suggest a suitable skill from the loaded skills. |
+| `nextAction` | Suggest the next tool from currently available execution tools. `tool_search` is excluded from ordinary execution candidates. |
+| `toolDiscovery` | Suggest finding a new tool when `tool_search` is active and existing tools do not fit. Jev does not perform the search. |
+| `resultAssessment` | Assess progress from recent tool results. After two consecutive scores below 0.5, point out the recent tool and failure type and suggest seeking evidence with an active tool not used in the last four results. It does not control execution. |
+| `loopDetection` | Judge whether recent results repeat a failure and suggest a check or alternative tool based on an observed missing path, permission problem, timeout, HTTP error, or other failure. |
+| `completion` | Suggest possible completion evidence only when Jev maps a successful check result ID directly to every numbered or bulleted requirement (or the whole request if there is no list). Unmapped items prompt further verification; the plugin never forces completion. |
+| `toolActivation` | In `act` mode, activate only tools listed in `activatableTools`. |
+| `toolPreflight` | In `act` mode, block a proposed tool call just before execution when it appears outside the request's scope. |
+| `modelRouting` | In `act` mode, select a session model from the available models listed in `models`. |
+| `thinkingLevel` | In `act` mode, select the session's thinking level. |
 
-Jev 판단은 사용자 요청이 시작될 때만이 아니라, **도구 결과를 받은 후 이어지는 에이전트 턴마다** 갱신됩니다. 동일한 상태에 대한 중복 판단은 건너뜁니다. 모델이 이미 선택한 호출을 다른 도구 호출로 바꾸지는 않습니다.
+Jev decisions are refreshed not only when a user request starts but also **on agent turns following tool results**. Duplicate decisions for an unchanged state are skipped. The plugin does not replace a call the agent has already selected with another tool call.
 
-추가 옵션은 예시 설정 파일에 있습니다.
+### Experimental code search
 
-- `provider.selected`: `jev_compatible` 또는 `respan-ai`.
-- `provider.jev_compatible`, `provider.respan-ai`: 각 공급자의 `model`, `apiKey`, `endpoint`. 미지정 키는 각각 `TYPESAFE_API_KEY`, `OPENROUTER_API_KEY`에서 읽고, 주소는 TypeSafe SDK 또는 OpenRouter 기본 주소를 사용합니다.
-- `models`: `modelRouting` 후보. `["provider/model-id"]` 형식이며 현재 세션에서 사용 가능한 모델만 고려합니다.
-- `activatableTools`: `toolActivation`의 도구 이름 허용 목록. 기본값은 빈 목록입니다.
-- `limits.timeoutMs`, `limits.spanTimeoutMs`, `limits.maxCallsPerAgentRun`, `limits.stateChars`: Jev 호출 시간(기본 1,000ms), Span-01 계열 호출 시간(기본 10,000ms), 실행당 최대 호출 수(30회), 요청·결과 텍스트 길이(2,000자)를 제한합니다. 마지막 한 번의 호출은 최근 실패가 있으면 회복 판단, 성공한 검사 결과가 있으면 완료 근거 매핑, 그 밖에 진행도 결과가 있으면 진행 평가, 첫 턴이면 다음 행동·도구 발견·스킬 순으로 집중합니다. 직접 검사 결과 없이 완료만 묻는 턴은 호출을 아껴 나중 결과를 확인합니다.
-- `thresholds.fit`, `thresholds.confidence`, `thresholds.risk`: 적합도, 선택 확신도, 호출 차단 기준입니다. 기본값은 각각 `0.6`, `0.65`, `0.8`입니다.
-- `preflightOnError`: 호출 사전 검사에 실패했을 때 `act` 모드에서 호출을 `allow`(기본값)할지 `block`할지 선택합니다.
-- `skillRerank`: 켜면 스킬이 24개 이상일 때 1차 후보 세 개의 `SKILL.md` 앞 500자까지 읽어 추가 Jev 호출로 재선별합니다. 기본값은 `false`이며 스킬 본문 일부가 TypeSafe에 전송됩니다. 남은 호출 한도가 두 번 이하이면 이후 판단을 위해 재선별을 건너뜁니다.
-- `redactValues`, `redactPatterns`: Jev로 보내는 요청·도구 결과·도구 인자·후보 설명에서 지정한 문자열 또는 정규식 일치 부분을 일정한 자리표시자로 치환합니다. 기본값은 빈 목록입니다. `redactPatterns`는 JavaScript 정규식 본문 목록이며 빈 문자열과 일치하는 패턴은 허용하지 않습니다. 후보 이름이 치환되어 서로 구분되지 않으면 제안을 보류합니다.
+Set `"experimentalCodeSearch": true` to register `jev_code_search` at session startup for a trusted Git project. It is `false` by default and is not registered in `off` mode or without an API key for the selected decision provider. For example: `jev_code_search({ "query": "Where are expired sessions rejected?", "path": "src" })`. The optional `path` is a directory inside the project. Jev selects relevant files and source ranges; the tool returns paths, line numbers, and verbatim excerpts rather than generating an answer or editing code.
 
-## 전송되는 데이터와 문제 해결
+The search considers Git-tracked and unignored source files. It excludes hidden paths, paths that look like credentials, symbolic links, and files over 64 KiB. More than 48 eligible files require a narrower path. It evaluates up to 24 distributed 20-line windows per relevant file, so it may not examine a whole file. **File paths and some source content are sent to the selected decision provider.** Path filtering does not detect secrets inside source files; enable this only in projects whose contents you intend to send.
 
-판단 API를 켜면 잘린 사용자 요청과 최근 도구 이름·성공/오류 상태가 Jev 선택 시 TypeSafe로, Span-01 선택 시 OpenRouter를 거쳐 Respan으로 전송됩니다. 스킬·도구·모델 후보의 이름과 설명도 질문에 포함됩니다. 완료 판단을 켜면 최대 6개 요구 항목과 최근 성공한 테스트·빌드 검사 결과의 ID·종류·도구 이름도 전송됩니다. 6개를 넘는 항목은 완료 근거가 충분하다고 표시하지 않습니다. `curl --fail` 같은 동작 확인은 `includeToolOutput`을 켜고 결과 텍스트가 있을 때만 근거 후보가 됩니다. 도구 출력 본문은 기본적으로 전송하지 않습니다. `includeToolErrors: true`로 설정하면 실패한 도구의 텍스트 일부만, `includeToolOutput: true`로 설정하면 성공한 결과를 포함한 텍스트 일부를 전송합니다. 결과 텍스트는 `limits.stateChars`로 길이를 제한하지만 오류 메시지에도 비밀값이 들어갈 수 있습니다. `toolPreflight`를 켜면 해당 호출의 인자도 길이를 제한해 보냅니다. 민감한 작업에서는 전송 범위를 검토하세요.
+Enabling `decisions.toolActivation`, `decisions.modelRouting`, or `decisions.thinkingLevel` alongside experimental search causes a configuration error. A search call itself does not change the agent's model, thinking level, or active tool set mid-turn. On hosts with `eval`, the tool is hidden from the model's direct tool list and can be called through `eval`. Start a new session after changing the setting. Use regular `grep` and `read` when you already know the exact symbol or path.
 
-제안용 판단 요청이 실패하면 해당 판단을 건너뛰고 senpi의 일반 동작을 유지합니다. `toolPreflight`의 실패 시 차단 여부는 `preflightOnError`가 결정합니다. 플러그인이 동작하지 않으면 선택한 모델의 API 키, `mode`, JSONC 오류 경고, 프로젝트 신뢰 상태를 확인하세요.
+#### Search cost observed in real OmO runs
 
-개발과 릴리스에 참여하려면 [CONTRIBUTING.md](./CONTRIBUTING.md)를 참고하세요.
+We tested Jev-first code retrieval with real OmO calls. We gave `openai/gpt-6-sol` the same question tracing behavior across several files in this repository, five times with ordinary search and five times with Jev search. **Both methods found source evidence in all five runs. Including Jev's estimated cost, Jev search cost 19.4% less in this experiment.**
+
+| Five-run total | Ordinary search | Jev search |
+| --- | ---: | ---: |
+| Host model cost (including cache charges) | $0.327948 | $0.260144 |
+| Estimated Jev cost | $0 | $0.004038 |
+| **Total cost** | **$0.327948** | **$0.264182** |
+
+Jev cost is estimated from its [published input price](https://docs.typesafe.ai/models). This measurement covers one investigation task in one repository; it does not guarantee savings on other work or preservation of the prompt cache.
+
+Additional options are documented in the [example configuration](./jev-plugin.example.jsonc):
+
+- `provider.selected`: `jev_compatible` or `respan-ai`.
+- `provider.jev_compatible`, `provider.respan-ai`: Per-provider `model`, `apiKey`, and `endpoint`. Missing keys come from `TYPESAFE_API_KEY` or `OPENROUTER_API_KEY`, respectively; the TypeSafe SDK or OpenRouter supplies the default endpoint.
+- `models`: Candidates for `modelRouting` as `["provider/model-id"]`. Only models available in the current session are considered.
+- `activatableTools`: Allowlist for `toolActivation`. Empty by default.
+- `limits.timeoutMs`, `limits.spanTimeoutMs`, `limits.maxCallsPerAgentRun`, `limits.stateChars`: Jev timeout (default 1,000 ms), Span-01 timeout (default 10,000 ms), maximum calls per agent run (30), and request/result text length (2,000 characters). When one call remains, it prioritizes recovery after a failure, completion-evidence mapping after a successful check, progress assessment after other results, or next action, tool discovery, and skills on an initial turn. It saves a call instead of asking only about completion before a check result exists.
+- `thresholds.fit`, `thresholds.confidence`, `thresholds.risk`: Suitability, selection confidence, and blocking thresholds. Defaults: `0.6`, `0.65`, and `0.8`.
+- `preflightOnError`: Whether `act` mode should `allow` (the default) or `block` a tool call when preflight fails.
+- `skillRerank`: When enabled with at least 24 skills, make an additional Jev request using up to the first 500 characters of each of the three shortlisted `SKILL.md` files. Defaults to `false`; part of each skill file is sent to TypeSafe. Skip reranking when at most two calls remain so later decisions retain budget.
+- `redactValues`, `redactPatterns`: Replace specified strings or regex matches with fixed placeholders in requests, tool results, tool arguments, and candidate descriptions sent to Jev. Both default to empty lists. `redactPatterns` contains JavaScript regex bodies; patterns matching an empty string are rejected. If redaction makes candidate names indistinguishable, the suggestion is withheld.
+
+## Data sent and troubleshooting
+
+With the decision API enabled, a truncated user request and recent tool names and success/error status are sent to TypeSafe when Jev is selected, or through OpenRouter to Respan when Span-01 is selected. Skill, tool, and model candidate names and descriptions are also included in questions. With completion enabled, up to six requirements and the IDs, kinds, and tool names of recent successful test/build checks are sent; more than six requirements cannot be marked as fully supported. A behavior check such as `curl --fail` is considered evidence only when `includeToolOutput` is enabled and text from the result is available. Tool output text is not sent by default. `includeToolErrors: true` sends a bounded part of failed tool output only; `includeToolOutput: true` also includes successful results. Result text is limited by `limits.stateChars`, but even an error message can contain secrets. Enabling `toolPreflight` also sends bounded tool arguments. Review the transmitted data for sensitive work.
+
+If an advisory decision request fails, the plugin skips that decision and preserves normal senpi behavior. `preflightOnError` controls whether a failed preflight blocks execution. If the plugin does not work, check the selected provider's API key, `mode`, JSONC warning, and project trust status.
+
+For development and release information, see [CONTRIBUTING.md](./CONTRIBUTING.md).

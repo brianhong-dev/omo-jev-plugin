@@ -210,6 +210,35 @@ export class JevDecider {
     return { ...result, answers };
   }
 
+  async rankCode(
+    query: string,
+    candidates: readonly Candidate[],
+    signal?: AbortSignal,
+  ): Promise<readonly number[]> {
+    const questions: Questions = {};
+    for (const [index, candidate] of candidates.entries()) {
+      questions[`source${index}`] = {
+        type: "noul",
+        instructions: `Is this source relevant to the requested behavior? Path: ${redactText(candidate.name, this.config)}
+Source: ${redactText(candidate.description, this.config)}`,
+      };
+    }
+    if (candidates.length === 0) return [];
+    this.onRequest?.();
+    const result = await this.decide({
+      request: redactText(query, this.config).slice(0, this.config.limits.stateChars),
+    }, questions, signal);
+    this.onUsage?.(result.usage, result.model);
+    return candidates.map((_candidate, index) => ({
+      index,
+      probability: noulAnswer.safeParse(result.answers[`source${index}`]).data?.noul ?? 0,
+    }))
+      .filter(({ probability }) => probability >= this.config.thresholds.fit)
+      .sort((a, b) => b.probability - a.probability || a.index - b.index)
+      .slice(0, 3)
+      .map(({ index }) => index);
+  }
+
   async next(state: NextState, signal?: AbortSignal, availableCalls?: number): Promise<NextDecision> {
     const remaining = availableCalls ?? this.config.limits.maxCallsPerAgentRun;
     if (remaining <= 0) return {};
