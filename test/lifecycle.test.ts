@@ -202,7 +202,7 @@ test("sends bounded failed-tool evidence while keeping successful output private
     await mkdir(join(cwd, ".omo"));
     await writeFile(join(cwd, ".omo", "jev-plugin.jsonc"), JSON.stringify({
       mode: "shadow", apiKey: "test-key", endpoint: `http://127.0.0.1:${server.port}`,
-      includeToolErrors: true, limits: { stateChars: 100 },
+      includeToolErrors: true, limits: { stateChars: 100 }, redactValues: ["SECRET456"],
       decisions: {
         skills: false, nextAction: false, toolDiscovery: false, toolActivation: false,
         toolPreflight: false, resultAssessment: false, loopDetection: false,
@@ -236,7 +236,7 @@ test("sends bounded failed-tool evidence while keeping successful output private
     });
     await emit("tool_result", {
       type: "tool_result", toolName: "bash", isError: true,
-      content: [{ type: "text", text: `ENOENT: missing file ${"x".repeat(200)}` }],
+      content: [{ type: "text", text: `ENOENT: missing file ${"x".repeat(75)}SECRET456${"x".repeat(125)}` }],
     });
     await emit("turn_start", { type: "turn_start", turnIndex: 0, timestamp: 0 });
 
@@ -245,6 +245,7 @@ test("sends bounded failed-tool evidence while keeping successful output private
     const sent = JSON.stringify(states[0]);
     expect(sent).toContain("ENOENT: missing file");
     expect(sent).not.toContain("private successful content");
+    expect(sent).not.toContain("SECR");
     expect(sent).not.toContain("x".repeat(100));
   } finally {
     server.stop(true);

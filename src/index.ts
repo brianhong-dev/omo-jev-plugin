@@ -1,7 +1,7 @@
 import { noticeEntryRenderer, type ExtensionAPI, type ExtensionContext } from "@code-yeongyu/senpi";
 import { z } from "zod";
 import { ConfigurationError, loadConfig, resolveApiKey, type PluginConfig } from "./config.js";
-import { JevDecider, type Candidate, type NextDecision } from "./decision.js";
+import { JevDecider, redactText, type Candidate, type NextDecision } from "./decision.js";
 import { checkVersion, installedVersion } from "./update.js";
 import { addUsage, emptyUsage, formatUsage, usageEntrySchema, type UsageTotals } from "./usage.js";
 
@@ -228,10 +228,10 @@ export default function jevPlugin(pi: ExtensionAPI): void {
       shadowFeedback.succeeded = !event.isError;
     }
     const snippet = (config.includeToolOutput || (event.isError && config.includeToolErrors))
-      ? event.content
+      ? redactText(event.content
         .filter((part) => part.type === "text")
         .map((part) => part.text)
-        .join(" ")
+        .join(" "), config)
         .slice(0, config.limits.stateChars)
       : "";
     recentResults.push(`${event.toolName}: ${event.isError ? "error" : "success"}${snippet ? `; ${snippet}` : ""}`);

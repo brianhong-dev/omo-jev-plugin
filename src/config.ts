@@ -35,6 +35,15 @@ const displaySchema = z.strictObject({
   decisions: z.boolean().default(false),
 });
 
+const redactPatternSchema = z.string().min(1).max(128).refine((pattern) => {
+  try {
+    return !new RegExp(pattern).test("");
+  } catch (error) {
+    if (error instanceof SyntaxError) return false;
+    throw error;
+  }
+}, "Must be a valid pattern that does not match empty text");
+
 const configSchema = z.strictObject({
   enabled: z.boolean().default(true),
   mode: z.enum(["off", "shadow", "advise", "act"]).default("off"),
@@ -58,6 +67,8 @@ const configSchema = z.strictObject({
   includeToolOutput: z.boolean().default(false),
   includeToolErrors: z.boolean().default(false),
   skillRerank: z.boolean().default(false),
+  redactValues: z.array(z.string().min(4)).max(32).default([]),
+  redactPatterns: z.array(redactPatternSchema).max(16).default([]),
   preflightOnError: z.enum(["allow", "block"]).default("allow"),
 });
 
@@ -116,6 +127,8 @@ async function readConfig(path: string): Promise<ConfigInput | undefined> {
     includeToolOutput: z.boolean().optional(),
     includeToolErrors: z.boolean().optional(),
     skillRerank: z.boolean().optional(),
+    redactValues: z.array(z.string().min(4)).max(32).optional(),
+    redactPatterns: z.array(redactPatternSchema).max(16).optional(),
     preflightOnError: z.enum(["allow", "block"]).optional(),
   }).safeParse(value);
   if (!result.success) throw new ConfigurationError(path, z.prettifyError(result.error));
