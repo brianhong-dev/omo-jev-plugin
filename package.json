@@ -23,7 +23,7 @@
     "registry": "https://registry.npmjs.org/",
     "access": "public"
   },
-  "files": ["index.js", "dist", "README.md", "LICENSE", "jev-plugin.example.jsonc"],
+  "files": ["index.js", "dist", "README.md", "README.ko.md", "LICENSE", "jev-plugin.example.jsonc"],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "check": "tsc --noEmit -p tsconfig.json",
@@ -33,6 +33,7 @@
   "dependencies": {
     "@typesafe-ai/sdk": "0.6.0",
     "jsonc-parser": "^3.3.1",
+    "typebox": "1.3.34",
     "zod": "^4.1.0"
   },
   "devDependencies": {

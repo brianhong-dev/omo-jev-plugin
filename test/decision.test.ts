@@ -25,6 +25,7 @@ function config(): PluginConfig {
   return {
     enabled: true,
     mode: "advise",
+    experimentalCodeSearch: false,
     provider: { selected: "jev_compatible", jev_compatible: {}, "respan-ai": {} },
     models: [],
     activatableTools: [],

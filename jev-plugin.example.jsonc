@@ -2,6 +2,8 @@
   // Copy to ~/.omo/jev-plugin.jsonc (or .omo/jev-plugin.jsonc in a trusted project).
   // No decision API request is made until you set mode to shadow, advise, or act.
   "enabled": true,
+  // Experimental, opt-in source retrieval for trusted Git projects.
+  "experimentalCodeSearch": false,
   "mode": "advise",
   "provider": {
     "selected": "jev_compatible",
