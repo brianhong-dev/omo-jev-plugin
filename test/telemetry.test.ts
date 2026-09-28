@@ -70,15 +70,22 @@ test("records a basic session without sending details unless consented", async (
     pluginModel: "jev-1.13.0", llmModel: "openai/gpt-6", thinkingEffort: "high",
   };
   const summary = {
-    type: "session_summary" as const, schemaVersion: 1 as const,
+    type: "session_summary" as const, schemaVersion: 2 as const,
     installationId: info.installationId, pluginVersion: "0.0.8",
     mode: "shadow" as const, provider: "jev_compatible" as const,
-    decisionCalls: 2, inputTokens: 100, outputTokens: 5, estimatedCost: 0.001,
+    ...metadata,
+  };
+  const usage = {
+    type: "turn_usage" as const, schemaVersion: 1 as const,
+    installationId: info.installationId, pluginVersion: "0.0.8",
+    usageSessionId: "session-123", eventId: "19af32a7-04bf-442e-8940-c2611d333005",
+    turnIndex: 0, inputTokens: 100, outputTokens: 5, estimatedCost: 0.001,
     ...metadata,
   };
   // When a session starts and detailed consent is absent.
   await recorder.sessionStarted(info, metadata);
   await recorder.sessionSummary(false, summary);
+  await recorder.turnUsage(false, usage);
   // Then only the minimal event reaches the exporter.
   expect(events).toEqual([{
     type: "session_started", schemaVersion: 1,
@@ -86,6 +93,8 @@ test("records a basic session without sending details unless consented", async (
   }]);
   // When consent is explicitly supplied.
   await recorder.sessionSummary(true, summary);
+  await recorder.turnUsage(true, usage);
   // Then the replaceable exporter receives the summary.
   expect(events[1]).toEqual(summary);
+  expect(events[2]).toEqual(usage);
 });

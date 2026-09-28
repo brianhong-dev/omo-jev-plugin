@@ -19,10 +19,12 @@ export class PostHogExporter implements TelemetryExporter {
     });
   }
 
-  async send({ installationId, type, ...properties }: TelemetryEvent): Promise<void> {
+  async send(eventData: TelemetryEvent): Promise<void> {
+    const { installationId, type, ...properties } = eventData;
     this.client.capture({
       distinctId: installationId,
       event: `jev_plugin_${type}`,
+      ...(eventData.type === "turn_usage" ? { uuid: eventData.eventId } : {}),
       properties: { ...properties, $process_person_profile: false, $geoip_disable: true },
     });
   }

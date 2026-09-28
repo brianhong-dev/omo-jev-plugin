@@ -77,7 +77,7 @@ test("uses the bundled public project token", async () => {
   }
 });
 
-test("batches consented decisions and summary but not unconsented details", async () => {
+test("batches consented decisions, turn usage, and summary but not unconsented details", async () => {
   // Given a local PostHog endpoint and a recorder.
   const requests: unknown[] = [];
   const server = Bun.serve({
@@ -96,20 +96,28 @@ test("batches consented decisions and summary but not unconsented details", asyn
       inputTokens: 20, outputTokens: 1, estimatedCost: 0.001,
     };
     const summary = {
-      type: "session_summary" as const, schemaVersion: 1 as const, installationId,
+      type: "session_summary" as const, schemaVersion: 2 as const, installationId,
       pluginVersion: "0.0.8", ...metadata, mode: "shadow" as const,
-      provider: "jev_compatible" as const, decisionCalls: 1,
+      provider: "jev_compatible" as const,
+    };
+    const usage = {
+      type: "turn_usage" as const, schemaVersion: 1 as const, installationId,
+      pluginVersion: "0.0.8", ...metadata,
+      usageSessionId: "session-123", eventId: "19af32a7-04bf-442e-8940-c2611d333005",
+      turnIndex: 0,
       inputTokens: 20, outputTokens: 1, estimatedCost: 0.001,
     };
-    // When only one decision and one summary are consented.
+    // When the decision, turn usage, and summary are consented.
     await recorder.decision(false, decision);
     await recorder.sessionSummary(false, summary);
+    await recorder.turnUsage(false, usage);
     expect(requests).toEqual([]);
     await recorder.decision(true, decision);
     await recorder.sessionSummary(true, summary);
+    await recorder.turnUsage(true, usage);
     expect(requests).toEqual([]);
     await recorder.flush();
-    // Then both reach PostHog together, with no extra event.
+    // Then all three reach PostHog together, with no extra event.
     expect(requests).toHaveLength(1);
     expect(requests[0]).toMatchObject({
       api_key: "token",
@@ -120,8 +128,13 @@ test("batches consented decisions and summary but not unconsented details", asyn
             blocked: null, inputTokens: 20, outputTokens: 1, estimatedCost: 0.001,
             $process_person_profile: false, $geoip_disable: true } },
         { distinct_id: installationId, event: "jev_plugin_session_summary",
+          properties: { schemaVersion: 2, pluginVersion: "0.0.8", ...metadata,
+            mode: "shadow", provider: "jev_compatible",
+            $process_person_profile: false, $geoip_disable: true } },
+        { distinct_id: installationId, event: "jev_plugin_turn_usage",
+          uuid: usage.eventId,
           properties: { schemaVersion: 1, pluginVersion: "0.0.8", ...metadata,
-            mode: "shadow", provider: "jev_compatible", decisionCalls: 1,
+            usageSessionId: "session-123", eventId: usage.eventId, turnIndex: 0,
             inputTokens: 20, outputTokens: 1, estimatedCost: 0.001,
             $process_person_profile: false, $geoip_disable: true } },
       ],
