@@ -1,5 +1,8 @@
 import { expect, test } from "bun:test";
 import { TypeSafeClient } from "@typesafe-ai/sdk";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { PluginConfig } from "../src/config.js";
 import { JevDecider, type NextState } from "../src/decision.js";
 
@@ -29,6 +32,7 @@ function config(): PluginConfig {
     thresholds: { fit: 0.6, confidence: 0.65, risk: 0.8 },
     includeToolOutput: false,
     includeToolErrors: false,
+    skillRerank: false,
     preflightOnError: "allow",
   };
 }
@@ -211,5 +215,65 @@ test("keeps loop and progress judgments separate from action selection", async (
     expect(result.tool).toBeUndefined();
   } finally {
     server.stop(true);
+  }
+});
+
+test("reranks a large skill roster with bounded local skill details", async () => {
+  // Given ambiguous short descriptions and a detailed local skill file.
+  const dir = await mkdtemp(join(tmpdir(), "omo-jev-skills-"));
+  const filePath = join(dir, "SKILL.md");
+  const requests: unknown[] = [];
+  let counted = 0;
+  const active = config();
+  active.decisions.skills = true;
+  active.decisions.nextAction = false;
+  active.skillRerank = true;
+  const server = Bun.serve({
+    port: 0,
+    async fetch(req) {
+      const body: unknown = await req.json();
+      requests.push(body);
+      const first = requests.length === 1;
+      return Response.json({
+        model: "jev-1.13.0",
+        answers: first ? {
+          skill: {
+            type: "choice", choice: "skill-0", confidence: 0.9,
+            probabilities: { "skill-0": 0.8, "skill-1": 0.15, "skill-2": 0.05 },
+          },
+          skillFits: { type: "noul", noul: 0.9 },
+        } : {
+          skill: {
+            type: "choice", choice: "skill-1", confidence: 0.9,
+            probabilities: { "skill-0": 0.1, "skill-1": 0.9, "skill-2": 0 },
+          },
+          skillFits: { type: "noul", noul: 0.9 },
+        },
+        usage: { input_tokens: 5, output_tokens: 2 },
+      });
+    },
+  });
+  try {
+    await writeFile(filePath, "The skill-1 details explain its precise use case.");
+    const client = new TypeSafeClient({
+      apiKey: "test-key", baseURL: `http://127.0.0.1:${server.port}`, retry: { maxRetries: 0 },
+    });
+    const skills = Array.from({ length: 25 }, (_, index) => ({
+      name: `skill-${index}`, description: "Similar brief description", filePath,
+    }));
+
+    // When a large roster is evaluated with room in the request budget.
+    const result = await new JevDecider(active, client, undefined, () => { counted++; })
+      .next({ ...state, skills }, undefined, 2);
+
+    // Then the shortlist is reconsidered with detail, without transmitting the local path.
+    expect(result.skill).toBe("skill-1");
+    expect(requests).toHaveLength(2);
+    expect(counted).toBe(2);
+    expect(JSON.stringify(requests[1])).toContain("precise use case");
+    expect(JSON.stringify(requests)).not.toContain(dir);
+  } finally {
+    server.stop(true);
+    await rm(dir, { recursive: true, force: true });
   }
 });

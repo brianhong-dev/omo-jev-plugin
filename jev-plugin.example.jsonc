@@ -38,5 +38,7 @@
   "includeToolOutput": false,
   // Include bounded text from failed tools without sharing successful output.
   "includeToolErrors": false,
+  // Re-check a shortlist using up to 500 characters from each skill file when 24+ skills are available.
+  "skillRerank": false,
   "preflightOnError": "allow"
 }

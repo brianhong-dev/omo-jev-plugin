@@ -185,7 +185,7 @@ export default function jevPlugin(pi: ExtensionAPI): void {
         decider = new JevDecider(config, undefined, (usage, model) => {
           turnUsage = addUsage(turnUsage, usage, model);
           sessionUsage = addUsage(sessionUsage, usage, model);
-        });
+        }, () => { callCount++; });
       }
     } catch (error) {
       if (error instanceof ConfigurationError || error instanceof Error) {
@@ -208,7 +208,7 @@ export default function jevPlugin(pi: ExtensionAPI): void {
     request = event.prompt;
     skills = (explicitSkill ? [] : event.systemPromptOptions.skills ?? [])
       .filter((skill) => !skill.disableModelInvocation)
-      .map((skill) => ({ name: skill.name, description: skill.description }));
+      .map((skill) => ({ name: skill.name, description: skill.description, filePath: skill.filePath }));
     recentResults = [];
     advice = undefined;
     lastState = "";
@@ -264,9 +264,8 @@ export default function jevPlugin(pi: ExtensionAPI): void {
     const fingerprint = JSON.stringify({ state, active: [...active], resultEpoch });
     if (lastState === fingerprint) return;
     lastState = fingerprint;
-    callCount++;
     try {
-      const decision = await decider.next(state, ctx.signal);
+      const decision = await decider.next(state, ctx.signal, config.limits.maxCallsPerAgentRun - callCount);
       pi.appendEntry("jev:decision", {
         kind: "turn",
         tool: decision.tool,
