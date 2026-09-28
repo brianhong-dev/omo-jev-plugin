@@ -40,5 +40,5 @@ test("reads the installed version from the package manifest", async () => {
   // When its version is read.
   const current = await installedVersion();
   // Then it matches the version used to build this checkout.
-  expect(current).toBe("0.0.4");
+  expect(current).toBe("0.0.5");
 });
