@@ -7,8 +7,50 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Type } from "typebox";
 import jevPlugin from "../src/index.js";
+import { NoopTelemetryExporter } from "../src/telemetry.js";
+import type { TelemetryEvent } from "../src/telemetry.js";
 import { installedVersion } from "../src/update.js";
 import { usageEntrySchema } from "../src/usage.js";
+
+const testPlugin: typeof jevPlugin = (pi) => jevPlugin(pi, new NoopTelemetryExporter());
+
+test("attaches live session metadata to the basic event and consented decision events", async () => {
+  // Given an extension context with host session/model metadata and a local capture exporter.
+  const captured: TelemetryEvent[] = [];
+  let flushes = 0;
+  const handlers = new Map<string, (event: object, ctx: object) => Promise<void>>();
+  jevPlugin({
+    on: (name: string, handler: (event: object, ctx: object) => Promise<void>) => handlers.set(name, handler),
+    registerEntryRenderer: () => {},
+    registerCommand: () => {},
+    appendEntry: () => {},
+    getThinkingLevel: () => "high",
+  } as unknown as Parameters<typeof jevPlugin>[0], {
+    async send(event) { captured.push(event); },
+    async flush() { flushes++; },
+  });
+  const ctx = {
+    cwd: process.cwd(),
+    isProjectTrusted: () => false,
+    sessionManager: { getBranch: () => [], getSessionId: () => "omo-session-test" },
+    model: { provider: "openai", id: "gpt-6" },
+    thinkingLevel: "high",
+    ui: { notify: () => {} },
+  };
+  // When the session starts, even if no agent run or shutdown occurs.
+  await handlers.get("session_start")?.({ type: "session_start" }, ctx);
+  // Then the always-sent event includes host metadata without raw task content.
+  expect(captured[0]).toMatchObject({
+    type: "session_started", omoSessionId: "omo-session-test",
+    llmModel: "openai/gpt-6", thinkingEffort: "high",
+  });
+  expect(captured[0]).toHaveProperty("pluginProvider");
+  expect(captured[0]).toHaveProperty("pluginModel");
+  // When a turn ends without requiring a session shutdown.
+  await handlers.get("turn_end")?.({ type: "turn_end", turnIndex: 0 }, ctx);
+  // Then queued telemetry has been flushed at both observable boundaries.
+  expect(flushes).toBe(2);
+});
 
 test("records an update card instead of a replaceable status or persistent widget", async () => {
   const current = await installedVersion();
@@ -26,7 +68,7 @@ test("records an update card instead of a replaceable status or persistent widge
   );
   try {
     const handlers = new Map<string, (event: object, ctx: object) => Promise<void>>();
-    jevPlugin({
+    testPlugin({
       on: (name: string, handler: (event: object, ctx: object) => Promise<void>) => handlers.set(name, handler),
       registerEntryRenderer: (name: string, renderer: (entry: { data: unknown }) => unknown) =>
         renderers.set(name, renderer),
@@ -72,7 +114,7 @@ test("records a current-version card when the registry matches the installed ver
   );
   try {
     const handlers = new Map<string, (event: object, ctx: object) => Promise<void>>();
-    jevPlugin({
+    testPlugin({
       on: (name: string, handler: (event: object, ctx: object) => Promise<void>) => handlers.set(name, handler),
       registerEntryRenderer: (name: string, renderer: (entry: { data: unknown }) => unknown) =>
         renderers.set(name, renderer),
@@ -127,7 +169,7 @@ test("records per-turn and session Jev usage in the UI history without a startup
     runtime.appendEntry = (type, data) => { history.push({ type, data }); };
     runtime.getActiveTools = () => [];
     runtime.getAllTools = () => [];
-    const extension = await loadExtensionFromFactory(jevPlugin, cwd, createEventBus(), runtime);
+    const extension = await loadExtensionFromFactory(testPlugin, cwd, createEventBus(), runtime);
     const notices: string[] = [];
     const widgets: string[] = [];
     const ctx = {
@@ -216,7 +258,7 @@ test("sends bounded failed-tool evidence while keeping successful output private
     runtime.appendEntry = () => {};
     runtime.getActiveTools = () => [];
     runtime.getAllTools = () => [];
-    const extension = await loadExtensionFromFactory(jevPlugin, cwd, createEventBus(), runtime);
+    const extension = await loadExtensionFromFactory(testPlugin, cwd, createEventBus(), runtime);
     const ctx = {
       cwd, isProjectTrusted: () => true,
       sessionManager: { getBranch: () => [] },
@@ -299,7 +341,7 @@ test("records shadow recommendations against executed tool results", async () =>
         exposure: "direct", searchKeywords: [], allowLazyActivation: false,
       },
     ];
-    const extension = await loadExtensionFromFactory(jevPlugin, cwd, createEventBus(), runtime);
+    const extension = await loadExtensionFromFactory(testPlugin, cwd, createEventBus(), runtime);
     const notices: string[] = [];
     const ctx = {
       cwd, isProjectTrusted: () => true,
@@ -383,7 +425,7 @@ test("advises tool discovery only through an active tool_search", async () => {
       sourceInfo: { path: "test", source: "test", scope: "system", origin: "top-level" },
       exposure: "direct", searchKeywords: [], allowLazyActivation: false,
     }];
-    const extension = await loadExtensionFromFactory(jevPlugin, cwd, createEventBus(), runtime);
+    const extension = await loadExtensionFromFactory(testPlugin, cwd, createEventBus(), runtime);
     const ctx = {
       cwd, isProjectTrusted: () => true,
       sessionManager: { getBranch: () => [] },
@@ -458,7 +500,7 @@ test("suggests reconsideration only after consecutive low-progress judgments", a
       sourceInfo: { path: "test", source: "test", scope: "system", origin: "top-level" },
       exposure: "direct" as const, searchKeywords: [], allowLazyActivation: false,
     }));
-    const extension = await loadExtensionFromFactory(jevPlugin, cwd, createEventBus(), runtime);
+    const extension = await loadExtensionFromFactory(testPlugin, cwd, createEventBus(), runtime);
     const ctx = {
       cwd, isProjectTrusted: () => true,
       sessionManager: { getBranch: () => [] },
@@ -547,7 +589,7 @@ test("maps successful checks to requirements before qualifying completion", asyn
     runtime.appendEntry = (type, data) => { history.push({ type, data }); };
     runtime.getActiveTools = () => [];
     runtime.getAllTools = () => [];
-    const extension = await loadExtensionFromFactory(jevPlugin, cwd, createEventBus(), runtime);
+    const extension = await loadExtensionFromFactory(testPlugin, cwd, createEventBus(), runtime);
     const ctx = {
       cwd, isProjectTrusted: () => true,
       sessionManager: { getBranch: () => [] },
@@ -635,7 +677,7 @@ test("maps an opted-in successful HTTP check without persisting response text", 
     runtime.appendEntry = (type, data) => { history.push({ type, data }); };
     runtime.getActiveTools = () => [];
     runtime.getAllTools = () => [];
-    const extension = await loadExtensionFromFactory(jevPlugin, cwd, createEventBus(), runtime);
+    const extension = await loadExtensionFromFactory(testPlugin, cwd, createEventBus(), runtime);
     const ctx = {
       cwd, isProjectTrusted: () => true,
       sessionManager: { getBranch: () => [] },
@@ -706,7 +748,7 @@ test("keeps the final Jev call for a later verified result", async () => {
     runtime.appendEntry = (type, data) => { history.push({ type, data }); };
     runtime.getActiveTools = () => [];
     runtime.getAllTools = () => [];
-    const extension = await loadExtensionFromFactory(jevPlugin, cwd, createEventBus(), runtime);
+    const extension = await loadExtensionFromFactory(testPlugin, cwd, createEventBus(), runtime);
     const ctx = {
       cwd, isProjectTrusted: () => true,
       sessionManager: { getBranch: () => [] },

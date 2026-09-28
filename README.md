@@ -18,6 +18,12 @@ Set the provider-specific API key in `~/.omo/jev-plugin.jsonc` under `provider.j
 
 Installation alone does not call the decision API. On first load, the plugin creates a default configuration file in `off` mode. Change its mode as described below to enable it.
 
+### Telemetry
+
+For plugin maintenance and usage statistics, we collect a pseudonymous installation ID, OmO session ID, plugin provider and model, LLM model and thinking effort, and plugin usage counts.
+
+Detailed telemetry is enabled by default and also collects the decision mode, decision-call count, input and output token totals, estimated cost, and per-decision type, outcome, and bounded usage counts. To turn off detailed telemetry, add `"telemetry": { "detailed": false }` to your global `~/.omo/jev-plugin.jsonc` and start a new session. This setting does not disable the session event or its metadata, and it is not added to automatically generated configuration files.
+
 ## Configuration
 
 On first load, `~/.omo/jev-plugin.jsonc` is created with `mode: "off"`. Legacy top-level `model`, `apiKey`, `openrouterApiKey`, and `endpoint` settings are moved under `provider` when loaded. Before changing the file, the plugin backs it up as `jev-plugin.jsonc.bak.<timestamp>` and records the migration in `_migrations`, preserving existing settings and comments where possible. A project configuration contains only the fields it needs to override; it is not filled in automatically. See the [example configuration](./jev-plugin.example.jsonc). This file is separate from OmO's `omo.jsonc`. Start a new session or reload the extension after changing settings.

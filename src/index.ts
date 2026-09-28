@@ -7,6 +7,8 @@ import { JevDecider, redactText, type Candidate, type NextDecision } from "./dec
 import { requirementsFromRequest, verificationKind, type VerificationResult } from "./evidence.js";
 import { classifyFailure, planRecovery, type Attempt, type FailureKind, type RecoveryPlan } from "./recovery.js";
 import { isSuccessfulCheck, replayShadow, shadowFeedbackSchema, type ShadowFeedback } from "./shadow.js";
+import { PostHogExporter } from "./posthog.js";
+import { TelemetryRecorder, updateInstallationInfo, type InstallationInfo, type TelemetryExporter, type TelemetryMetadata } from "./telemetry.js";
 import { checkVersion, installedVersion } from "./update.js";
 import { addUsage, emptyUsage, formatUsage, usageEntrySchema, type UsageTotals } from "./usage.js";
 
@@ -121,7 +123,10 @@ export function formatDecisionNotice(
   ].join(" | ");
 }
 
-export default function jevPlugin(pi: ExtensionAPI): void {
+export default function jevPlugin(pi: ExtensionAPI, exporter: TelemetryExporter = new PostHogExporter()): void {
+  const telemetry = new TelemetryRecorder(exporter);
+  let installationInfo: InstallationInfo | undefined;
+  let sessionCalls = 0;
   let config: PluginConfig | undefined;
   let decider: JevDecider | undefined;
   let request = "";
@@ -142,6 +147,43 @@ export default function jevPlugin(pi: ExtensionAPI): void {
   let verificationResults: VerificationResult[] = [];
   let recentAttempts: Attempt[] = [];
   let searchRegistered = false;
+
+  function telemetryMetadata(ctx: ExtensionContext): TelemetryMetadata {
+    return {
+      omoSessionId: ctx.sessionManager.getSessionId?.() ?? null,
+      pluginProvider: config?.provider.selected ?? null,
+      pluginModel: config ? decisionModel(config) : null,
+      llmModel: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : null,
+      thinkingEffort: ctx.thinkingLevel ?? pi.getThinkingLevel?.() ?? null,
+    };
+  }
+
+  async function recordDecision(
+    ctx: ExtensionContext,
+    kind: "turn" | "preflight" | "code_search",
+    outcome: "success" | "error",
+    before: UsageTotals,
+    recommendationMade = false,
+    blocked: boolean | null = null,
+  ): Promise<void> {
+    if (!installationInfo || !config?.telemetry.detailed) return;
+    const cost = sessionUsage.estimatedCost === null || before.estimatedCost === null
+      ? null : sessionUsage.estimatedCost - before.estimatedCost;
+    try {
+      await telemetry.decision(true, {
+        type: "decision_recorded", schemaVersion: 1,
+        installationId: installationInfo.installationId,
+        pluginVersion: installationInfo.lastPluginVersion,
+        ...telemetryMetadata(ctx),
+        decisionKind: kind, outcome, recommendationMade, blocked,
+        inputTokens: sessionUsage.inputTokens - before.inputTokens,
+        outputTokens: sessionUsage.outputTokens - before.outputTokens,
+        estimatedCost: cost,
+      });
+    } catch (error) {
+      if (!(error instanceof Error)) throw error;
+    }
+  }
 
   function restoreUsage(ctx: ExtensionContext): void {
     sessionUsage = emptyUsage;
@@ -215,6 +257,8 @@ export default function jevPlugin(pi: ExtensionAPI): void {
   }
 
   pi.on("session_start", async (_event, ctx) => {
+    installationInfo = undefined;
+    sessionCalls = 0;
     restoreUsage(ctx);
     config = undefined;
     decider = undefined;
@@ -232,6 +276,14 @@ export default function jevPlugin(pi: ExtensionAPI): void {
     requirementsTruncated = false;
     verificationResults = [];
     recentAttempts = [];
+    try {
+      const version = await installedVersion();
+      const info = await updateInstallationInfo(version);
+      installationInfo = info;
+    } catch (error) {
+      if (!(error instanceof Error)) throw error;
+      ctx.ui.notify(`Jev installation information unavailable: ${error.message}`, "warning");
+    }
     try {
       const current = await installedVersion();
       const result = await checkVersion(current);
@@ -253,7 +305,7 @@ export default function jevPlugin(pi: ExtensionAPI): void {
         decider = new JevDecider(config, undefined, (usage, model) => {
           turnUsage = addUsage(turnUsage, usage, model);
           sessionUsage = addUsage(sessionUsage, usage, model);
-        }, () => { callCount++; });
+        }, () => { callCount++; sessionCalls++; });
       }
       if (decider && config.experimentalCodeSearch && ctx.isProjectTrusted()) {
         if (!searchRegistered) {
@@ -275,12 +327,15 @@ export default function jevPlugin(pi: ExtensionAPI): void {
                 return { content: [{ type: "text", text: "Jev code search needs two remaining decision calls." }], details: {} };
               }
               const currentDecider = decider;
+              const before = sessionUsage;
               try {
                 const text = await searchCode({
                   cwd: toolCtx.cwd, query: params.query, scope: params.path, signal,
                 }, (query, candidates, searchSignal) => currentDecider.rankCode(query, candidates, searchSignal));
+                await recordDecision(toolCtx, "code_search", "success", before);
                 return { content: [{ type: "text", text }], details: {} };
               } catch (error) {
+                await recordDecision(toolCtx, "code_search", "error", before);
                 if (!(error instanceof CodeSearchError)) throw error;
                 return { content: [{ type: "text", text: error.message }], details: {} };
               }
@@ -299,6 +354,14 @@ export default function jevPlugin(pi: ExtensionAPI): void {
         return;
       }
       throw error;
+    } finally {
+      if (installationInfo) {
+        try {
+          await telemetry.sessionStarted(installationInfo, telemetryMetadata(ctx));
+        } catch (error) {
+          if (!(error instanceof Error)) throw error;
+        }
+      }
     }
   });
 
@@ -415,8 +478,10 @@ export default function jevPlugin(pi: ExtensionAPI): void {
     const fingerprint = JSON.stringify({ state, active: [...active], resultEpoch });
     if (lastState === fingerprint) return;
     lastState = fingerprint;
+    const before = sessionUsage;
     try {
       const decision = await decider.next(state, ctx.signal, config.limits.maxCallsPerAgentRun - callCount);
+      await recordDecision(ctx, "turn", "success", before, Boolean(decision.tool || decision.skill || decision.model));
       const nextLowProgressStreak = decision.progress !== undefined && decision.progress < 0.5
         ? lowProgressStreak + 1 : 0;
       const recovery = config.mode === "shadow" ? undefined
@@ -462,6 +527,7 @@ export default function jevPlugin(pi: ExtensionAPI): void {
         }
       }
     } catch (error) {
+      await recordDecision(ctx, "turn", "error", before);
       lastState = "";
       if (error instanceof Error) {
         ctx.ui.notify(`${config.provider.selected === "respan-ai" ? "Span-01" : "Jev"} turn decision unavailable: ${error.message}`, "warning");
@@ -471,14 +537,20 @@ export default function jevPlugin(pi: ExtensionAPI): void {
     }
   });
 
-  pi.on("turn_end", (event) => {
+  pi.on("turn_end", async (event) => {
     if (config?.mode === "shadow" && shadowFeedback) {
       pi.appendEntry("jev:feedback", { turnIndex: event.turnIndex, ...shadowFeedback });
       shadowFeedback = undefined;
     }
-    if (!decider) return;
-    pi.appendEntry("jev:usage", { turnIndex: event.turnIndex, turn: turnUsage, session: sessionUsage });
-    turnUsage = emptyUsage;
+    if (decider) {
+      pi.appendEntry("jev:usage", { turnIndex: event.turnIndex, turn: turnUsage, session: sessionUsage });
+      turnUsage = emptyUsage;
+    }
+    try {
+      await telemetry.flush();
+    } catch (error) {
+      if (!(error instanceof Error)) throw error;
+    }
   });
 
   pi.on("context", (event) => {
@@ -497,9 +569,12 @@ export default function jevPlugin(pi: ExtensionAPI): void {
   pi.on("tool_call", async (event, ctx) => {
     if (!canCall() || !config?.decisions.toolPreflight || !decider) return;
     callCount++;
+    sessionCalls++;
+    const before = sessionUsage;
     try {
       const risk = await decider.risk(request, event.toolName, event.input, ctx.signal);
       const blocked = risk >= config.thresholds.risk;
+      await recordDecision(ctx, "preflight", "success", before, false, blocked);
       pi.appendEntry("jev:decision", { kind: "preflight", tool: event.toolName, blocked, mode: config.mode });
       if (config.display.decisions) {
         ctx.ui.notify(formatDecisionNotice({ kind: "preflight", tool: event.toolName, blocked }, config.provider.selected), "info");
@@ -508,6 +583,7 @@ export default function jevPlugin(pi: ExtensionAPI): void {
         return { block: true, reason: "Decision preflight: proposed call appears outside the requested scope" };
       }
     } catch (error) {
+      await recordDecision(ctx, "preflight", "error", before);
       if (!(error instanceof Error)) throw error;
       ctx.ui.notify(`${config.provider.selected === "respan-ai" ? "Span-01" : "Jev"} preflight unavailable: ${error.message}`, "warning");
       if (config.mode === "act" && config.preflightOnError === "block") {
@@ -516,7 +592,29 @@ export default function jevPlugin(pi: ExtensionAPI): void {
     }
   });
 
-  pi.on("session_shutdown", () => {
+  pi.on("session_shutdown", async (_event, ctx) => {
+    if (installationInfo && config?.telemetry.detailed) {
+      try {
+        await telemetry.sessionSummary(true, {
+          type: "session_summary", schemaVersion: 1,
+          installationId: installationInfo.installationId,
+          pluginVersion: installationInfo.lastPluginVersion,
+          mode: config.mode, provider: config.provider.selected,
+          decisionCalls: sessionCalls,
+          inputTokens: sessionUsage.inputTokens,
+          outputTokens: sessionUsage.outputTokens,
+          estimatedCost: sessionUsage.estimatedCost,
+          ...telemetryMetadata(ctx),
+        });
+      } catch (error) {
+        if (!(error instanceof Error)) throw error;
+      }
+    }
+    try {
+      await telemetry.flush();
+    } catch (error) {
+      if (!(error instanceof Error)) throw error;
+    }
     decider = undefined;
     advice = undefined;
   });

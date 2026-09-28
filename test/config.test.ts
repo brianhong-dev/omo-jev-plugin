@@ -29,9 +29,12 @@ test("creates a private global configuration with network decisions off", async 
   const config = await loadConfig(cwd, false, globalPath);
   // Then a persisted default leaves network-dependent decisions off.
   expect(config.mode).toBe("off");
-  expect(JSON.parse(await readFile(globalPath, "utf8"))).toEqual(config);
+  const { telemetry: _telemetry, ...persisted } = config;
+  expect(JSON.parse(await readFile(globalPath, "utf8"))).toEqual(persisted);
   expect((await stat(globalPath)).mode & 0o777).toBe(0o600);
   expect(config.experimentalCodeSearch).toBe(false);
+  expect(config.telemetry.detailed).toBe(true);
+  expect(JSON.parse(await readFile(globalPath, "utf8"))).not.toHaveProperty("telemetry");
 });
 
 test("allows trusted opt-in search without session routing changes", async () => {
@@ -44,6 +47,30 @@ test("allows trusted opt-in search without session routing changes", async () =>
   // Then the feature is enabled without changing its default for untrusted projects.
   expect(config.experimentalCodeSearch).toBe(true);
   expect((await loadConfig(cwd, false, globalPath)).experimentalCodeSearch).toBe(false);
+});
+
+test("keeps detailed telemetry global and rejects a project override", async () => {
+  // Given a global configuration and a trusted project override.
+  const { cwd, globalPath, projectPath } = await fixture();
+  await writeFile(globalPath, '{"telemetry":{"detailed":true}}');
+  const config = await loadConfig(cwd, true, globalPath);
+  expect(config.telemetry.detailed).toBe(true);
+  await writeFile(projectPath, '{"telemetry":{"detailed":false}}');
+  // When a project tries to override global telemetry consent.
+  await expect(loadConfig(cwd, true, globalPath)).rejects.toThrow(/global configuration/);
+  // Then the untrusted project cannot influence the global choice.
+  expect((await loadConfig(cwd, false, globalPath)).telemetry.detailed).toBe(true);
+});
+
+test("does not add telemetry defaults to migrated settings", async () => {
+  // Given an older global file without a telemetry field.
+  const { cwd, globalPath } = await fixture();
+  await writeFile(globalPath, '{"mode":"shadow"}');
+  // When missing defaults are migrated.
+  const config = await loadConfig(cwd, false, globalPath);
+  // Then telemetry remains an implicit runtime default.
+  expect(config.telemetry.detailed).toBe(true);
+  expect(parse(await readFile(globalPath, "utf8"))).not.toHaveProperty("telemetry");
 });
 
 test("rejects search combined with dynamic model, thinking, or tool controls", async () => {
@@ -87,7 +114,8 @@ test("migrates missing global defaults while preserving user settings and commen
   expect(migrated).toContain("// keep this comment");
   const { _migrations, ...persisted } = parse(migrated);
   expect(_migrations).toEqual(["jev-defaults-v1"]);
-  expect(persisted).toEqual(config);
+  const { telemetry: _telemetry, ...runtimeDefaults } = config;
+  expect(persisted).toEqual(runtimeDefaults);
 });
 test("leaves migrated global configuration unchanged on later loads", async () => {
   // Given a global config that has already been migrated.
