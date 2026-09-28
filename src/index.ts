@@ -2,13 +2,14 @@ import { noticeEntryRenderer, type ExtensionAPI, type ExtensionContext } from "@
 import { z } from "zod";
 import { ConfigurationError, loadConfig, resolveApiKey, type PluginConfig } from "./config.js";
 import { JevDecider, redactText, type Candidate, type NextDecision } from "./decision.js";
+import { requirementsFromRequest, verificationKind, type VerificationResult } from "./evidence.js";
 import { isSuccessfulCheck, replayShadow, shadowFeedbackSchema, type ShadowFeedback } from "./shadow.js";
 import { checkVersion, installedVersion } from "./update.js";
 import { addUsage, emptyUsage, formatUsage, usageEntrySchema, type UsageTotals } from "./usage.js";
 
 const thinkingSchema = z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 
-function formatAdvice(decision: NextDecision, lowProgress: boolean, successfulTool?: string): string | undefined {
+function formatAdvice(decision: NextDecision, lowProgress: boolean): string | undefined {
   const advice = [
     decision.skill ? `Relevant skill to examine: ${decision.skill}` : "",
     decision.tool ? `Candidate next tool: ${decision.tool}` : "",
@@ -16,9 +17,10 @@ function formatAdvice(decision: NextDecision, lowProgress: boolean, successfulTo
     decision.looping ? "The recent approach appears repetitive; reconsider it." : "",
     lowProgress ? "Recent results show little progress; seek new evidence or change approach." : "",
     decision.complete
-      ? decision.completionEvidence && successfulTool
-        ? `Jev sees possible completion after ${successfulTool} succeeded; cite the specific evidence and verify remaining criteria.`
-        : "Jev suggests completion, but no successful check supports it; verify the request with an observable result."
+      ? decision.completionEvidence && decision.verifiedRequirements?.length
+        ? `Jev sees possible completion with mapped checks: ${decision.verifiedRequirements.map(({ requirementIndex, result }) =>
+          `requirement ${requirementIndex + 1} <- ${result.kind} ${result.tool} (${result.id})`).join(", ")}; verify the evidence before concluding.`
+        : `Jev suggests completion, but only ${decision.verifiedRequirements?.length ?? 0}/${decision.requirementCount ?? 0} requirements have mapped checks; verify the rest.`
       : "",
   ].filter(Boolean);
   return advice.length ? `Jev suggestions (not instructions or permissions): ${advice.join(" ")}` : undefined;
@@ -83,6 +85,7 @@ export function formatDecisionNotice(
     `progress=${turn.progress ?? "unknown"}`,
     `complete=${turn.complete === undefined ? "unknown" : turn.complete}`,
     `completionEvidence=${turn.completionEvidence === undefined ? "unknown" : turn.completionEvidence}`,
+    `mappedChecks=${turn.verifiedRequirements?.length ?? 0}/${turn.requirementCount ?? 0}`,
   ].join(" | ");
 }
 
@@ -102,7 +105,9 @@ export default function jevPlugin(pi: ExtensionAPI): void {
   let shadowFeedback: Omit<ShadowFeedback, "turnIndex"> | undefined;
   let previousErrorTool: string | undefined;
   let lowProgressStreak = 0;
-  let lastSuccessfulTool: string | undefined;
+  let requirements: readonly string[] = [];
+  let requirementsTruncated = false;
+  let verificationResults: VerificationResult[] = [];
 
   function restoreUsage(ctx: ExtensionContext): void {
     sessionUsage = emptyUsage;
@@ -189,7 +194,9 @@ export default function jevPlugin(pi: ExtensionAPI): void {
     shadowFeedback = undefined;
     previousErrorTool = undefined;
     lowProgressStreak = 0;
-    lastSuccessfulTool = undefined;
+    requirements = [];
+    requirementsTruncated = false;
+    verificationResults = [];
     try {
       const current = await installedVersion();
       const result = await checkVersion(current);
@@ -222,7 +229,11 @@ export default function jevPlugin(pi: ExtensionAPI): void {
     }
   });
 
-  pi.on("session_tree", (_event, ctx) => restoreUsage(ctx));
+  pi.on("session_tree", (_event, ctx) => {
+    restoreUsage(ctx);
+    verificationResults = [];
+    lastState = "";
+  });
 
   pi.on("input", (event) => {
     explicitSkill = /(?:^|\s)(?:\/skill:[a-z0-9-]+|\$skill:[a-z0-9-]+)|^\$[a-z][a-z0-9-]*\b/i
@@ -232,6 +243,9 @@ export default function jevPlugin(pi: ExtensionAPI): void {
   pi.on("before_agent_start", (event) => {
     if (event.preview) return;
     request = event.prompt;
+    const extracted = requirementsFromRequest(request);
+    requirements = extracted.items;
+    requirementsTruncated = extracted.truncated;
     skills = (explicitSkill ? [] : event.systemPromptOptions.skills ?? [])
       .filter((skill) => !skill.disableModelInvocation)
       .map((skill) => ({ name: skill.name, description: skill.description, filePath: skill.filePath }));
@@ -243,12 +257,11 @@ export default function jevPlugin(pi: ExtensionAPI): void {
     shadowFeedback = undefined;
     previousErrorTool = undefined;
     lowProgressStreak = 0;
-    lastSuccessfulTool = undefined;
+    verificationResults = [];
   }, { previewSafe: true });
 
   pi.on("tool_result", (event) => {
     if (!config?.enabled || config.mode === "off") return;
-    lastSuccessfulTool = event.isError ? undefined : event.toolName;
     if (shadowFeedback) {
       shadowFeedback.toolCalls++;
       shadowFeedback.firstTool ??= event.toolName;
@@ -269,6 +282,15 @@ export default function jevPlugin(pi: ExtensionAPI): void {
         .join(" "), config)
         .slice(0, config.limits.stateChars)
       : "";
+    const kind = verificationKind(event.toolName, event.input);
+    if (kind && event.isError) verificationResults = [];
+    if (kind && !event.isError && (kind !== "behavior" || (config.includeToolOutput && snippet))) {
+      verificationResults.push({
+        id: event.toolCallId, tool: event.toolName, kind,
+        ...(kind === "behavior" ? { detail: snippet } : {}),
+      });
+      verificationResults = verificationResults.slice(-4);
+    }
     recentResults.push(`${event.toolName}: ${event.isError ? "error" : "success"}${snippet ? `; ${snippet}` : ""}`);
     recentResults = recentResults.slice(-4);
     resultEpoch++;
@@ -298,6 +320,9 @@ export default function jevPlugin(pi: ExtensionAPI): void {
       lastResults: recentResults,
       tools,
       canDiscoverTools: active.has("tool_search"),
+      requirements,
+      requirementsTruncated,
+      verificationResults,
       skills,
       models,
       thinking,
@@ -311,6 +336,10 @@ export default function jevPlugin(pi: ExtensionAPI): void {
         kind: "turn",
         tool: decision.tool,
         discoverTools: decision.discoverTools,
+        completionEvidence: decision.completionEvidence,
+        verifiedRequirements: decision.verifiedRequirements?.map(({ requirementIndex, result }) => ({
+          requirementIndex, resultId: result.id, kind: result.kind, tool: result.tool,
+        })),
         skill: decision.skill,
         model: decision.model,
         looping: decision.looping,
@@ -324,7 +353,7 @@ export default function jevPlugin(pi: ExtensionAPI): void {
       }
       lowProgressStreak = decision.progress !== undefined && decision.progress < 0.5
         ? lowProgressStreak + 1 : 0;
-      advice = formatAdvice(decision, lowProgressStreak >= 2, lastSuccessfulTool);
+      advice = formatAdvice(decision, lowProgressStreak >= 2);
       if (config.mode !== "act") return;
       if (config.decisions.toolActivation && decision.tool
         && config.activatableTools.includes(decision.tool) && !active.has(decision.tool)) {

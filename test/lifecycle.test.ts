@@ -237,7 +237,7 @@ test("sends bounded failed-tool evidence while keeping successful output private
       content: [{ type: "text", text: "private successful content" }],
     });
     await emit("tool_result", {
-      type: "tool_result", toolName: "bash", isError: true,
+      type: "tool_result", toolName: "bash", input: { command: "git status" }, isError: true,
       content: [{ type: "text", text: `ENOENT: missing file ${"x".repeat(75)}SECRET456${"x".repeat(125)}` }],
     });
     await emit("turn_start", { type: "turn_start", turnIndex: 0, timestamp: 0 });
@@ -320,11 +320,11 @@ test("records shadow recommendations against executed tool results", async () =>
     await emit("turn_start", { type: "turn_start", turnIndex: 0, timestamp: 0 });
     await emit("tool_result", { type: "tool_result", toolName: "read", input: {}, isError: true, content: [] });
     await emit("tool_result", { type: "tool_result", toolName: "read", input: {}, isError: true, content: [] });
-    await emit("tool_result", { type: "tool_result", toolName: "bash",
+    await emit("tool_result", { type: "tool_result", toolName: "bash", toolCallId: "shadow-check-1",
       input: { command: "bun test" }, isError: false, content: [] });
     await emit("turn_end", { type: "turn_end", turnIndex: 0 });
     await emit("turn_start", { type: "turn_start", turnIndex: 1, timestamp: 1 });
-    await emit("tool_result", { type: "tool_result", toolName: "bash",
+    await emit("tool_result", { type: "tool_result", toolName: "bash", toolCallId: "shadow-check-2",
       input: { command: "bun test" }, isError: false, content: [] });
     await emit("tool_result", { type: "tool_result", toolName: "read", input: {}, isError: false, content: [] });
     await emit("turn_end", { type: "turn_end", turnIndex: 1 });
@@ -483,8 +483,8 @@ test("suggests reconsideration only after consecutive low-progress judgments", a
   }
 });
 
-test("qualifies completion advice with a recorded successful result", async () => {
-  // Given a completion judgment before and after a successful observable check.
+test("maps successful checks to requirements before qualifying completion", async () => {
+  // Given two requirements with separate test and build results.
   const cwd = await mkdtemp(join(tmpdir(), "omo-jev-completion-"));
   let calls = 0;
   const server = Bun.serve({
@@ -495,7 +495,14 @@ test("qualifies completion advice with a recorded successful result", async () =
         model: "jev-1.13.0",
         answers: {
           complete: { type: "noul", noul: 0.99 },
-          completionEvidence: { type: "noul", noul: calls === 1 ? 0.1 : 0.9 },
+          ...(calls >= 2 && calls <= 3 ? {
+            verify0: { type: "choice", choice: "check-tests", confidence: 0.9,
+              probabilities: { "check-tests": 0.9, "check-build": 0.1, __none__: 0 } },
+            verify0Fits: { type: "noul", noul: 0.9 },
+            verify1: { type: "choice", choice: calls === 3 ? "check-build" : "__none__",
+              confidence: 0.9, probabilities: { "check-tests": 0.1, "check-build": 0.9, __none__: 0.9 } },
+            verify1Fits: { type: "noul", noul: calls === 3 ? 0.9 : 0.1 },
+          } : {}),
         },
         usage: { input_tokens: 5, output_tokens: 2 },
       });
@@ -512,7 +519,8 @@ test("qualifies completion advice with a recorded successful result", async () =
       },
     }));
     const runtime = createExtensionRuntime();
-    runtime.appendEntry = () => {};
+    const history: Array<{ type: string; data: unknown }> = [];
+    runtime.appendEntry = (type, data) => { history.push({ type, data }); };
     runtime.getActiveTools = () => [];
     runtime.getAllTools = () => [];
     const extension = await loadExtensionFromFactory(jevPlugin, cwd, createEventBus(), runtime);
@@ -531,26 +539,105 @@ test("qualifies completion advice with a recorded successful result", async () =
       return result;
     };
 
-    // When Jev first claims completion with no check, then judges a successful result.
+    // When Jev judges completion before checks, after each check, and after a failed check.
     await emit("session_start", { type: "session_start" });
     await emit("before_agent_start", {
-      type: "before_agent_start", prompt: "Inspect", systemPromptOptions: { skills: [] },
+      type: "before_agent_start", prompt: "1. Run tests\n2. Build package", systemPromptOptions: { skills: [] },
     });
     await emit("turn_start", { type: "turn_start", turnIndex: 0, timestamp: 0 });
-    const before = JSON.stringify(await emit("context", { type: "context", messages: [] })) ?? "";
-    await emit("tool_result", { type: "tool_result", toolName: "read", isError: false, content: [] });
+    await emit("tool_result", { type: "tool_result", toolName: "read", toolCallId: "read-1",
+      input: { path: "src/index.ts" }, isError: false, content: [] });
+    await emit("tool_result", { type: "tool_result", toolName: "bash", toolCallId: "check-tests",
+      input: { command: "bun test" }, isError: false, content: [] });
     await emit("turn_start", { type: "turn_start", turnIndex: 1, timestamp: 1 });
-    const after = JSON.stringify(await emit("context", { type: "context", messages: [] })) ?? "";
-    await emit("tool_result", { type: "tool_result", toolName: "read", isError: true, content: [] });
+    await emit("tool_result", { type: "tool_result", toolName: "bash", toolCallId: "check-build",
+      input: { command: "bun run build" }, isError: false, content: [] });
     await emit("turn_start", { type: "turn_start", turnIndex: 2, timestamp: 2 });
-    const failed = JSON.stringify(await emit("context", { type: "context", messages: [] })) ?? "";
+    const context = await emit("context", { type: "context", messages: [] });
+    await emit("tool_result", { type: "tool_result", toolName: "bash", toolCallId: "check-failed",
+      input: { command: "bun test" }, isError: true, content: [] });
+    await emit("turn_start", { type: "turn_start", turnIndex: 3, timestamp: 3 });
 
-    // Then advice states the missing check first and cites the observable result second.
-    expect(before).toContain("no successful check");
-    expect(after).toContain("read");
-    expect(after).toContain("verify");
-    expect(after).not.toContain("no successful check");
-    expect(failed).toContain("no successful check");
+    // Then only mapped successful results support a completion suggestion.
+    const decisions = history.filter(({ type }) => type === "jev:decision");
+    expect(decisions[0]?.data).toMatchObject({ completionEvidence: false, verifiedRequirements: [] });
+    expect(decisions[1]?.data).toMatchObject({ completionEvidence: false, verifiedRequirements: [
+      { requirementIndex: 0, resultId: "check-tests", kind: "test" },
+    ] });
+    expect(decisions[2]?.data).toMatchObject({ completionEvidence: true, verifiedRequirements: [
+      { requirementIndex: 0, resultId: "check-tests", kind: "test" },
+      { requirementIndex: 1, resultId: "check-build", kind: "build" },
+    ] });
+    expect(decisions[3]?.data).toMatchObject({ completionEvidence: false, verifiedRequirements: [] });
+    expect(context).toHaveProperty("messages");
+  } finally {
+    server.stop(true);
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("maps an opted-in successful HTTP check without persisting response text", async () => {
+  // Given a direct HTTP check whose output sharing is explicitly enabled.
+  const cwd = await mkdtemp(join(tmpdir(), "omo-jev-http-evidence-"));
+  const server = Bun.serve({
+    port: 0,
+    fetch() {
+      return Response.json({
+        model: "jev-1.13.0",
+        answers: {
+          complete: { type: "noul", noul: 0.99 },
+          verify0: { type: "choice", choice: "http-check", confidence: 0.9,
+            probabilities: { "http-check": 0.9, __none__: 0.1 } },
+          verify0Fits: { type: "noul", noul: 0.9 },
+        },
+        usage: { input_tokens: 5, output_tokens: 2 },
+      });
+    },
+  });
+  try {
+    await mkdir(join(cwd, ".omo"));
+    await writeFile(join(cwd, ".omo", "jev-plugin.jsonc"), JSON.stringify({
+      mode: "shadow", apiKey: "test-key", endpoint: `http://127.0.0.1:${server.port}`,
+      includeToolOutput: true,
+      decisions: {
+        skills: false, nextAction: false, toolDiscovery: false, toolActivation: false,
+        toolPreflight: false, resultAssessment: false, loopDetection: false,
+        completion: true, modelRouting: false, thinkingLevel: false,
+      },
+    }));
+    const runtime = createExtensionRuntime();
+    const history: Array<{ type: string; data: unknown }> = [];
+    runtime.appendEntry = (type, data) => { history.push({ type, data }); };
+    runtime.getActiveTools = () => [];
+    runtime.getAllTools = () => [];
+    const extension = await loadExtensionFromFactory(jevPlugin, cwd, createEventBus(), runtime);
+    const ctx = {
+      cwd, isProjectTrusted: () => true,
+      sessionManager: { getBranch: () => [] },
+      ui: { notify: () => {} },
+      modelRegistry: { getAvailable: () => [] },
+      signal: undefined,
+    };
+    const emit = async (name: string, event: object) => {
+      for (const handler of extension.handlers.get(name) ?? []) await Reflect.apply(handler, undefined, [event, ctx]);
+    };
+
+    // When the HTTP check succeeds and the next turn asks Jev to map it.
+    await emit("session_start", { type: "session_start" });
+    await emit("before_agent_start", {
+      type: "before_agent_start", prompt: "Check endpoint health", systemPromptOptions: { skills: [] },
+    });
+    await emit("tool_result", { type: "tool_result", toolName: "bash", toolCallId: "http-check",
+      input: { command: "curl -fsS http://127.0.0.1/health" },
+      isError: false, content: [{ type: "text", text: "healthy response" }] });
+    await emit("turn_start", { type: "turn_start", turnIndex: 0, timestamp: 0 });
+
+    // Then the saved evidence identifies the observed check but excludes its output.
+    const decision = history.find(({ type }) => type === "jev:decision");
+    expect(decision?.data).toMatchObject({ completionEvidence: true, verifiedRequirements: [
+      { requirementIndex: 0, resultId: "http-check", kind: "behavior", tool: "bash" },
+    ] });
+    expect(JSON.stringify(decision?.data)).not.toContain("healthy response");
   } finally {
     server.stop(true);
     await rm(cwd, { recursive: true, force: true });

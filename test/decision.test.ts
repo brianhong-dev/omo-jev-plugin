@@ -11,6 +11,9 @@ const state: NextState = {
   lastResults: [],
   tools: [{ name: "read", description: "Read a local file" }],
   canDiscoverTools: false,
+  requirements: ["Inspect the source file"],
+  requirementsTruncated: false,
+  verificationResults: [],
   skills: [],
   models: [],
   thinking: [],
@@ -205,6 +208,37 @@ test("does not request discovery when tool_search is inactive", async () => {
     const result = await new JevDecider(active, client).next(state);
     // Then no impossible search action is suggested.
     expect(result).toEqual({});
+  } finally {
+    server.stop(true);
+  }
+});
+
+test("rejects invented check references in completion evidence", async () => {
+  // Given one recorded test result and an answer citing a nonexistent result for one requirement.
+  const active = config();
+  active.decisions.nextAction = false;
+  active.decisions.completion = true;
+  const { server, client } = serverFor({
+    complete: { type: "noul", noul: 0.99 },
+    verify0: { type: "choice", choice: "imaginary", confidence: 0.99,
+      probabilities: { imaginary: 0.99, "check-tests": 0.01 } },
+    verify0Fits: { type: "noul", noul: 0.99 },
+    verify1: { type: "choice", choice: "check-tests", confidence: 0.99,
+      probabilities: { "check-tests": 0.99, __none__: 0.01 } },
+    verify1Fits: { type: "noul", noul: 0.99 },
+  });
+  try {
+    // When Jev evaluates the available check against both requirements.
+    const result = await new JevDecider(active, client).next({
+      ...state, requirements: ["Run tests", "Inspect the output"],
+      verificationResults: [{ id: "check-tests", tool: "bash", kind: "test" }],
+    });
+    // Then only the real result can be mapped and completion remains unsupported.
+    expect(result.complete).toBe(true);
+    expect(result.completionEvidence).toBe(false);
+    expect(result.verifiedRequirements).toEqual([
+      { requirementIndex: 1, result: { id: "check-tests", tool: "bash", kind: "test" } },
+    ]);
   } finally {
     server.stop(true);
   }
