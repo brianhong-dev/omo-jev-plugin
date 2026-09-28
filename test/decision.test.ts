@@ -24,6 +24,7 @@ const state: NextState = {
 function config(): PluginConfig {
   return {
     enabled: true,
+    autoUpdate: false,
     mode: "advise",
     experimentalCodeSearch: false,
     provider: { selected: "jev_compatible", jev_compatible: {}, "respan-ai": {} },

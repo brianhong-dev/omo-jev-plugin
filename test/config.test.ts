@@ -33,8 +33,17 @@ test("creates a private global configuration with network decisions off", async 
   expect(JSON.parse(await readFile(globalPath, "utf8"))).toEqual(persisted);
   expect((await stat(globalPath)).mode & 0o777).toBe(0o600);
   expect(config.experimentalCodeSearch).toBe(false);
+  expect(config.autoUpdate).toBe(false);
   expect(config.telemetry.detailed).toBe(true);
   expect(JSON.parse(await readFile(globalPath, "utf8"))).not.toHaveProperty("telemetry");
+});
+
+test("enables automatic updates only through an explicit configuration choice", async () => {
+  const { cwd, globalPath, projectPath } = await fixture();
+  await writeFile(globalPath, '{"mode":"off"}');
+  await writeFile(projectPath, '{"autoUpdate":true}');
+  expect((await loadConfig(cwd, true, globalPath)).autoUpdate).toBe(true);
+  expect((await loadConfig(cwd, false, globalPath)).autoUpdate).toBe(false);
 });
 
 test("allows trusted opt-in search without session routing changes", async () => {

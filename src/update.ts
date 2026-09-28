@@ -1,6 +1,9 @@
+import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
+import { promisify } from "node:util";
 import { z } from "zod";
 
+const execFileAsync = promisify(execFile);
 const versionSchema = z.string().regex(/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/);
 const registrySchema = z.object({ version: versionSchema });
 
@@ -32,4 +35,13 @@ export async function checkVersion(
     if (error instanceof Error) return;
     throw error;
   }
+}
+
+export async function updatePlugin(): Promise<void> {
+  const launcher = process.env["OMO_BIN"];
+  await execFileAsync(launcher ? process.execPath : process.env["SENPI_BIN"] ?? "omo",
+    [...(launcher ? [launcher] : []), "update", "npm:omo-jev-plugin"], {
+      timeout: 120_000,
+      maxBuffer: 1024 * 1024,
+    });
 }

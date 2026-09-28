@@ -63,6 +63,7 @@ const partialProviderSchema = z.strictObject({
 });
 const configSchema = z.strictObject({
   enabled: z.boolean().default(true),
+  autoUpdate: z.boolean().default(false),
   mode: z.enum(["off", "shadow", "advise", "act"]).default("off"),
   experimentalCodeSearch: z.boolean().default(false),
   provider: providerSchema.prefault({}),
@@ -134,6 +135,7 @@ async function readConfig(path: string, migrateDefaults = false): Promise<Config
   if (firstError) throw new ConfigurationError(path, printParseErrorCode(firstError.error));
   const result = z.strictObject({
     enabled: z.boolean().optional(),
+    autoUpdate: z.boolean().optional(),
     mode: z.enum(["off", "shadow", "advise", "act"]).optional(),
     experimentalCodeSearch: z.boolean().optional(),
     provider: partialProviderSchema.optional(),

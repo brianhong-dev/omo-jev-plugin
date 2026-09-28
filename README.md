@@ -12,7 +12,7 @@ Install the package in OmO or senpi:
 omo install npm:omo-jev-plugin
 ```
 
-When the plugin loads, it checks npm for a newer version and announces an available update in the UI before checking configuration or API keys. Run `omo update npm:omo-jev-plugin` to update. A failed npm lookup does not prevent startup.
+When the plugin loads, it checks npm for a newer version and announces an available update in the UI. Run `omo update npm:omo-jev-plugin` to update manually. Set `"autoUpdate": true` in `~/.omo/jev-plugin.jsonc` to install newer releases automatically and request a session reload when idle. This option defaults to `false`, requires a host that supports session reload, and works even when decision mode is `off`. An unavailable registry or failed update does not prevent startup; a blocked reload waits for the next idle opportunity.
 
 Set the provider-specific API key in `~/.omo/jev-plugin.jsonc` under `provider.jev_compatible.apiKey` or `provider.respan-ai.apiKey`. If absent, the plugin uses `TYPESAFE_API_KEY` or `OPENROUTER_API_KEY`, respectively, from the **process running OmO/senpi**. Each provider also supports an `endpoint`. Be careful when sharing project configuration containing a key. If the selected provider has no key, the plugin warns on load and makes no decision requests.
 

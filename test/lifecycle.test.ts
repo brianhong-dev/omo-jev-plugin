@@ -137,6 +137,117 @@ test("records a current-version card when the registry matches the installed ver
   }
 });
 
+test("updates only with opt-in and requests reload after successful installation", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "omo-jev-auto-update-"));
+  const originalFetch = globalThis.fetch;
+  const current = await installedVersion();
+  const latest = current.replace(/\d+$/, (patch) => String(Number(patch) + 1));
+  const calls: string[] = [];
+  let signalReload: () => void = () => {};
+  const reloaded = new Promise<void>((resolve) => { signalReload = resolve; });
+  globalThis.fetch = Object.assign(
+    async (url: RequestInfo | URL, init?: RequestInit) => url === "https://registry.npmjs.org/omo-jev-plugin/latest"
+      ? Response.json({ version: latest }) : originalFetch(url, init),
+    { preconnect: originalFetch.preconnect },
+  );
+  try {
+    await mkdir(join(cwd, ".omo"));
+    await writeFile(join(cwd, ".omo", "jev-plugin.jsonc"), '{"autoUpdate":true}');
+    const handlers = new Map<string, (event: object, ctx: object) => Promise<void>>();
+    jevPlugin({
+      on: (name: string, handler: (event: object, ctx: object) => Promise<void>) => handlers.set(name, handler),
+      registerEntryRenderer: () => {},
+      registerCommand: () => {},
+      appendEntry: () => {},
+    } as unknown as Parameters<typeof jevPlugin>[0], new NoopTelemetryExporter(),
+    async () => { calls.push("update"); });
+    const ctx = {
+      cwd, isProjectTrusted: () => true, isIdle: () => true, hasPendingMessages: () => false,
+      sessionManager: { getBranch: () => [] }, ui: { notify: () => {} },
+      requestReload: async () => { calls.push("reload"); signalReload(); },
+    };
+    await handlers.get("session_start")?.({ type: "session_start" }, ctx);
+    await reloaded;
+    expect(calls).toEqual(["update", "reload"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("does not request reload when an automatic update fails", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "omo-jev-update-failure-"));
+  const originalFetch = globalThis.fetch;
+  const current = await installedVersion();
+  const latest = current.replace(/\d+$/, (patch) => String(Number(patch) + 1));
+  const notices: string[] = [];
+  let reloads = 0;
+  globalThis.fetch = Object.assign(
+    async (url: RequestInfo | URL, init?: RequestInit) => url === "https://registry.npmjs.org/omo-jev-plugin/latest"
+      ? Response.json({ version: latest }) : originalFetch(url, init),
+    { preconnect: originalFetch.preconnect },
+  );
+  try {
+    await mkdir(join(cwd, ".omo"));
+    await writeFile(join(cwd, ".omo", "jev-plugin.jsonc"), '{"autoUpdate":true}');
+    const handlers = new Map<string, (event: object, ctx: object) => Promise<void>>();
+    jevPlugin({
+      on: (name: string, handler: (event: object, ctx: object) => Promise<void>) => handlers.set(name, handler),
+      registerEntryRenderer: () => {}, registerCommand: () => {}, appendEntry: () => {},
+    } as unknown as Parameters<typeof jevPlugin>[0], new NoopTelemetryExporter(),
+    async () => { throw new Error("installation failed"); });
+    const ctx = {
+      cwd, isProjectTrusted: () => true, isIdle: () => true, hasPendingMessages: () => false,
+      sessionManager: { getBranch: () => [] },
+      ui: { notify: (message: string) => notices.push(message) },
+      requestReload: async () => { reloads++; },
+    };
+    await handlers.get("session_start")?.({ type: "session_start" }, ctx);
+    await handlers.get("agent_settled")?.({ type: "agent_settled" }, ctx);
+    expect(reloads).toBe(0);
+    expect(notices).toContain("Jev automatic update failed: installation failed");
+  } finally {
+    globalThis.fetch = originalFetch;
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("defers reload until the host reports an idle session", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "omo-jev-update-deferred-"));
+  const originalFetch = globalThis.fetch;
+  const current = await installedVersion();
+  const latest = current.replace(/\d+$/, (patch) => String(Number(patch) + 1));
+  let idle = false;
+  let reloads = 0;
+  globalThis.fetch = Object.assign(
+    async (url: RequestInfo | URL, init?: RequestInit) => url === "https://registry.npmjs.org/omo-jev-plugin/latest"
+      ? Response.json({ version: latest }) : originalFetch(url, init),
+    { preconnect: originalFetch.preconnect },
+  );
+  try {
+    await mkdir(join(cwd, ".omo"));
+    await writeFile(join(cwd, ".omo", "jev-plugin.jsonc"), '{"autoUpdate":true}');
+    const handlers = new Map<string, (event: object, ctx: object) => Promise<void>>();
+    jevPlugin({
+      on: (name: string, handler: (event: object, ctx: object) => Promise<void>) => handlers.set(name, handler),
+      registerEntryRenderer: () => {}, registerCommand: () => {}, appendEntry: () => {},
+    } as unknown as Parameters<typeof jevPlugin>[0], new NoopTelemetryExporter(), async () => {});
+    const ctx = {
+      cwd, isProjectTrusted: () => true, isIdle: () => idle, hasPendingMessages: () => false,
+      sessionManager: { getBranch: () => [] }, ui: { notify: () => {} },
+      requestReload: async () => { reloads++; },
+    };
+    await handlers.get("session_start")?.({ type: "session_start" }, ctx);
+    expect(reloads).toBe(0);
+    idle = true;
+    await handlers.get("agent_settled")?.({ type: "agent_settled" }, ctx);
+    expect(reloads).toBe(1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("records per-turn and session Jev usage in the UI history without a startup widget", async () => {
   // Given the host extension loader, two Jev responses, and a trusted local configuration.
   const cwd = await mkdtemp(join(tmpdir(), "omo-jev-lifecycle-"));
