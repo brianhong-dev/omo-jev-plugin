@@ -56,6 +56,7 @@ const configSchema = z.strictObject({
     risk: z.number().min(0).max(1).default(0.8),
   }).prefault({}),
   includeToolOutput: z.boolean().default(false),
+  includeToolErrors: z.boolean().default(false),
   preflightOnError: z.enum(["allow", "block"]).default("allow"),
 });
 
@@ -112,6 +113,7 @@ async function readConfig(path: string): Promise<ConfigInput | undefined> {
       risk: z.number().min(0).max(1).optional(),
     }).optional(),
     includeToolOutput: z.boolean().optional(),
+    includeToolErrors: z.boolean().optional(),
     preflightOnError: z.enum(["allow", "block"]).optional(),
   }).safeParse(value);
   if (!result.success) throw new ConfigurationError(path, z.prettifyError(result.error));

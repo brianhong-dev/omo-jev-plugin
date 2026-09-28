@@ -201,7 +201,7 @@ export default function jevPlugin(pi: ExtensionAPI): void {
 
   pi.on("tool_result", (event) => {
     if (!config?.enabled || config.mode === "off") return;
-    const snippet = config.includeToolOutput
+    const snippet = (config.includeToolOutput || (event.isError && config.includeToolErrors))
       ? event.content
         .filter((part) => part.type === "text")
         .map((part) => part.text)

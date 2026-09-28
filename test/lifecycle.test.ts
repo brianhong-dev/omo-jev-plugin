@@ -180,3 +180,73 @@ test("records per-turn and session Jev usage in the UI history without a startup
     await rm(cwd, { recursive: true, force: true });
   }
 });
+
+test("sends bounded failed-tool evidence while keeping successful output private", async () => {
+  // Given a local Jev endpoint and explicit permission to include failed tool output.
+  const cwd = await mkdtemp(join(tmpdir(), "omo-jev-errors-"));
+  const states: unknown[] = [];
+  const server = Bun.serve({
+    port: 0,
+    async fetch(request) {
+      const body: unknown = await request.json();
+      if (body && typeof body === "object" && "state" in body) states.push(body.state);
+      return Response.json({
+        model: "jev-1.13.0",
+        answers: { complete: { type: "noul", noul: 0.1 } },
+        usage: { input_tokens: 5, output_tokens: 2 },
+      });
+    },
+  });
+  try {
+    await mkdir(join(cwd, ".omo"));
+    await writeFile(join(cwd, ".omo", "jev-plugin.jsonc"), JSON.stringify({
+      mode: "shadow", apiKey: "test-key", endpoint: `http://127.0.0.1:${server.port}`,
+      includeToolErrors: true, limits: { stateChars: 100 },
+      decisions: {
+        skills: false, nextAction: false, toolDiscovery: false, toolActivation: false,
+        toolPreflight: false, resultAssessment: false, loopDetection: false,
+        completion: true, modelRouting: false, thinkingLevel: false,
+      },
+    }));
+    const runtime = createExtensionRuntime();
+    runtime.appendEntry = () => {};
+    runtime.getActiveTools = () => [];
+    runtime.getAllTools = () => [];
+    const extension = await loadExtensionFromFactory(jevPlugin, cwd, createEventBus(), runtime);
+    const ctx = {
+      cwd, isProjectTrusted: () => true,
+      sessionManager: { getBranch: () => [] },
+      ui: { notify: () => {} },
+      modelRegistry: { getAvailable: () => [] },
+      signal: undefined,
+    };
+    const emit = async (name: string, event: object) => {
+      for (const handler of extension.handlers.get(name) ?? []) await Reflect.apply(handler, undefined, [event, ctx]);
+    };
+
+    // When success and failure results arrive before the next decision.
+    await emit("session_start", { type: "session_start" });
+    await emit("before_agent_start", {
+      type: "before_agent_start", prompt: "Inspect", systemPromptOptions: { skills: [] },
+    });
+    await emit("tool_result", {
+      type: "tool_result", toolName: "read", isError: false,
+      content: [{ type: "text", text: "private successful content" }],
+    });
+    await emit("tool_result", {
+      type: "tool_result", toolName: "bash", isError: true,
+      content: [{ type: "text", text: `ENOENT: missing file ${"x".repeat(200)}` }],
+    });
+    await emit("turn_start", { type: "turn_start", turnIndex: 0, timestamp: 0 });
+
+    // Then only the bounded diagnostic excerpt reaches Jev.
+    expect(states).toHaveLength(1);
+    const sent = JSON.stringify(states[0]);
+    expect(sent).toContain("ENOENT: missing file");
+    expect(sent).not.toContain("private successful content");
+    expect(sent).not.toContain("x".repeat(100));
+  } finally {
+    server.stop(true);
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
