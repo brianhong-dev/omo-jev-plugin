@@ -12,6 +12,7 @@ function formatAdvice(decision: NextDecision, lowProgress: boolean, successfulTo
   const advice = [
     decision.skill ? `Relevant skill to examine: ${decision.skill}` : "",
     decision.tool ? `Candidate next tool: ${decision.tool}` : "",
+    decision.discoverTools ? "Available tools do not fit; use tool_search to discover one." : "",
     decision.looping ? "The recent approach appears repetitive; reconsider it." : "",
     lowProgress ? "Recent results show little progress; seek new evidence or change approach." : "",
     decision.complete
@@ -75,6 +76,7 @@ export function formatDecisionNotice(
     "Jev decision:",
     `skill=${turn.skill ?? "none"}`,
     `tool=${turn.tool ?? "none"}`,
+    `discoverTools=${turn.discoverTools === undefined ? "unknown" : turn.discoverTools}`,
     `model=${turn.model ?? "none"}`,
     `thinking=${turn.thinking ?? "none"}`,
     `looping=${turn.looping === undefined ? "unknown" : turn.looping}`,
@@ -295,6 +297,7 @@ export default function jevPlugin(pi: ExtensionAPI): void {
       request,
       lastResults: recentResults,
       tools,
+      canDiscoverTools: active.has("tool_search"),
       skills,
       models,
       thinking,
@@ -307,6 +310,7 @@ export default function jevPlugin(pi: ExtensionAPI): void {
       pi.appendEntry("jev:decision", {
         kind: "turn",
         tool: decision.tool,
+        discoverTools: decision.discoverTools,
         skill: decision.skill,
         model: decision.model,
         looping: decision.looping,

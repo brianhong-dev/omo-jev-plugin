@@ -10,6 +10,7 @@ const state: NextState = {
   request: "Inspect the source file",
   lastResults: [],
   tools: [{ name: "read", description: "Read a local file" }],
+  canDiscoverTools: false,
   skills: [],
   models: [],
   thinking: [],
@@ -125,6 +126,85 @@ test("does not recommend a forced Choice winner when nothing fits", async () => 
     const result = await new JevDecider(config(), client).next(state);
     // Then it abstains.
     expect(result.tool).toBeUndefined();
+  } finally {
+    server.stop(true);
+  }
+});
+
+test("requests tool discovery separately when available tools do not fit", async () => {
+  // Given an active search tool and a Jev answer that declines all ordinary tools.
+  const active = config();
+  active.decisions.toolDiscovery = true;
+  const questions: string[][] = [];
+  const availableTools: unknown[] = [];
+  const server = Bun.serve({
+    port: 0,
+    async fetch(req) {
+      const body = await req.json();
+      questions.push(Object.keys(body.questions));
+      availableTools.push(body.state.availableTools);
+      return Response.json({
+        model: "jev-1.13.0",
+        answers: {
+          tool: { type: "choice", choice: "__none__", confidence: 0.9,
+            probabilities: { read: 0.1, __none__: 0.9 } },
+          toolFits: { type: "noul", noul: 0.1 },
+          discoverTools: { type: "noul", noul: 0.95 },
+        },
+        usage: { input_tokens: 5, output_tokens: 2 },
+      });
+    },
+  });
+  const client = new TypeSafeClient({
+    apiKey: "test-key", baseURL: `http://127.0.0.1:${server.port}`, retry: { maxRetries: 0 },
+  });
+  try {
+    // When separate action and discovery judgments are requested.
+    const result = await new JevDecider(active, client).next({
+      ...state, canDiscoverTools: true,
+      tools: [...state.tools, { name: "tool_search", description: "Discover more tools" }],
+    });
+    // Then search is suggested without being selected as an ordinary tool.
+    expect(result.tool).toBeUndefined();
+    expect(result.discoverTools).toBe(true);
+    expect(questions).toEqual([["tool", "toolFits", "discoverTools"]]);
+    expect(availableTools).toEqual([["read"]]);
+  } finally {
+    server.stop(true);
+  }
+});
+
+test("does not recommend discovery when an available tool is selected", async () => {
+  // Given high scores for both a registered tool and the discovery question.
+  const active = config();
+  active.decisions.toolDiscovery = true;
+  const { server, client } = serverFor({
+    tool: { type: "choice", choice: "read", confidence: 0.9, probabilities: { read: 0.9, __none__: 0.1 } },
+    toolFits: { type: "noul", noul: 0.9 },
+    discoverTools: { type: "noul", noul: 0.95 },
+  });
+  try {
+    // When Jev evaluates the same turn.
+    const result = await new JevDecider(active, client).next({ ...state, canDiscoverTools: true });
+    // Then the valid active action wins instead of a search suggestion.
+    expect(result.tool).toBe("read");
+    expect(result.discoverTools).toBe(false);
+  } finally {
+    server.stop(true);
+  }
+});
+
+test("does not request discovery when tool_search is inactive", async () => {
+  // Given discovery enabled but no active search tool or other judgments.
+  const active = config();
+  active.decisions.nextAction = false;
+  active.decisions.toolDiscovery = true;
+  const { server, client } = serverFor({ discoverTools: { type: "noul", noul: 1 } });
+  try {
+    // When Jev is asked for a next decision.
+    const result = await new JevDecider(active, client).next(state);
+    // Then no impossible search action is suggested.
+    expect(result).toEqual({});
   } finally {
     server.stop(true);
   }

@@ -30,6 +30,7 @@ export type NextState = {
   readonly request: string;
   readonly lastResults: readonly string[];
   readonly tools: readonly Candidate[];
+  readonly canDiscoverTools: boolean;
   readonly skills: readonly Candidate[];
   readonly models: readonly Candidate[];
   readonly thinking: readonly Candidate[];
@@ -55,6 +56,7 @@ const responseSchema = z.object({
 
 export type NextDecision = {
   readonly tool?: string;
+  readonly discoverTools?: boolean;
   readonly skill?: string;
   readonly model?: string;
   readonly thinking?: string;
@@ -118,8 +120,14 @@ export class JevDecider {
 
   async next(state: NextState, signal?: AbortSignal, availableCalls = 1): Promise<NextDecision> {
     const questions: Questions = {};
-    if (this.config.decisions.nextAction || this.config.decisions.toolDiscovery) {
-      addChoice(questions, "tool", state.tools, this.config);
+    if (this.config.decisions.nextAction) {
+      addChoice(questions, "tool", state.tools.filter(({ name }) => name !== "tool_search"), this.config);
+    }
+    if (this.config.decisions.toolDiscovery && state.canDiscoverTools) {
+      questions["discoverTools"] = {
+        type: "noul",
+        instructions: "Are the available tools insufficient for the task, so tool_search should discover a better tool?",
+      };
     }
     if (this.config.decisions.skills) addChoice(questions, "skill", state.skills, this.config);
     if (this.config.decisions.modelRouting) addChoice(questions, "model", state.models, this.config);
@@ -158,6 +166,10 @@ export class JevDecider {
         request: redactText(state.request, this.config).slice(0, this.config.limits.stateChars),
         lastResults: state.lastResults.map((item) =>
           redactText(item, this.config).slice(0, this.config.limits.stateChars)),
+        ...(questions["discoverTools"] ? {
+          availableTools: state.tools.filter(({ name }) => name !== "tool_search")
+            .slice(0, 254).map(({ name }) => redactText(name, this.config)),
+        } : {}),
       },
       questions,
     }, signal ? { signal } : {}));
@@ -167,7 +179,8 @@ export class JevDecider {
     const progress = scoreAnswer.safeParse(answers["progress"]);
     const complete = noulAnswer.safeParse(answers["complete"]);
     const completionEvidence = noulAnswer.safeParse(answers["completionEvidence"]);
-    const tool = select(answers, "tool", state.tools, this.config);
+    const tool = select(answers, "tool", state.tools.filter(({ name }) => name !== "tool_search"), this.config);
+    const discoverTools = noulAnswer.safeParse(answers["discoverTools"]);
     let skill = select(answers, "skill", state.skills, this.config);
     if (skill && this.config.skillRerank && availableCalls >= 2 && state.skills.length >= 24) {
       const ranked = choiceAnswer.safeParse(answers["skill"]);
@@ -199,6 +212,7 @@ export class JevDecider {
     const thinking = select(answers, "thinking", state.thinking, this.config);
     return {
       ...(tool ? { tool } : {}),
+      ...(discoverTools.success ? { discoverTools: !tool && discoverTools.data.noul >= this.config.thresholds.fit } : {}),
       ...(skill ? { skill } : {}),
       ...(model ? { model } : {}),
       ...(thinking ? { thinking } : {}),
