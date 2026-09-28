@@ -1,7 +1,9 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { lstat, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { parse, printParseErrorCode, type ParseError } from "jsonc-parser";
+import { isDeepStrictEqual } from "node:util";
+import { applyEdits, modify, parse, printParseErrorCode, type ParseError } from "jsonc-parser";
 import { z } from "zod";
 
 const decisionsSchema = z.strictObject({
@@ -74,6 +76,7 @@ const configSchema = z.strictObject({
 
 type ConfigInput = z.input<typeof configSchema>;
 export type PluginConfig = z.output<typeof configSchema>;
+const defaultsMigrationId = "jev-defaults-v1";
 
 export function resolveApiKey(config: PluginConfig, environment = process.env): string | undefined {
   return config.apiKey ?? (environment["TYPESAFE_API_KEY"]?.trim() || undefined);
@@ -89,7 +92,7 @@ export class ConfigurationError extends Error {
 export const globalConfigPath = (): string => join(homedir(), ".omo", "jev-plugin.jsonc");
 export const projectConfigPath = (cwd: string): string => join(cwd, ".omo", "jev-plugin.jsonc");
 
-async function readConfig(path: string): Promise<ConfigInput | undefined> {
+async function readConfig(path: string, migrateDefaults = false): Promise<ConfigInput | undefined> {
   let source: string;
   try {
     source = await readFile(path, "utf8");
@@ -130,9 +133,72 @@ async function readConfig(path: string): Promise<ConfigInput | undefined> {
     redactValues: z.array(z.string().min(4)).max(32).optional(),
     redactPatterns: z.array(redactPatternSchema).max(16).optional(),
     preflightOnError: z.enum(["allow", "block"]).optional(),
+    _migrations: z.array(z.string()).optional(),
   }).safeParse(value);
   if (!result.success) throw new ConfigurationError(path, z.prettifyError(result.error));
-  return result.data;
+  const { _migrations: history, ...settings } = result.data;
+  if (migrateDefaults && !history?.includes(defaultsMigrationId)) {
+    const defaults = configSchema.parse({});
+    const formattingOptions = { insertSpaces: true, tabSize: 2, eol: source.includes("\r\n") ? "\r\n" : "\n" };
+    let migrated = source;
+    for (const [key, defaultValue] of Object.entries(defaults)) {
+      const current = Object.entries(settings).find(([name]) => name === key)?.[1];
+      if (current === undefined) {
+        migrated = applyEdits(migrated, modify(migrated, [key], defaultValue, { formattingOptions }));
+      } else if (defaultValue !== null && typeof defaultValue === "object" && !Array.isArray(defaultValue)
+        && current !== null && typeof current === "object" && !Array.isArray(current)) {
+        for (const [child, childDefault] of Object.entries(defaultValue)) {
+          if (!Object.hasOwn(current, child)) {
+            migrated = applyEdits(migrated, modify(migrated, [key, child], childDefault, { formattingOptions }));
+          }
+        }
+      }
+    }
+    if (migrated !== source) {
+      const nextHistory = [...history ?? [], defaultsMigrationId];
+      migrated = applyEdits(migrated, modify(migrated, ["_migrations"], nextHistory, { formattingOptions }));
+      const errors: ParseError[] = [];
+      const verified: unknown = parse(migrated, errors, { allowTrailingComma: true });
+      const document = z.record(z.string(), z.unknown()).safeParse(verified);
+      const { _migrations: applied, ...migratedSettings } = document.success ? document.data : {};
+      if (errors.length || !isDeepStrictEqual(applied, nextHistory)
+        || !isDeepStrictEqual(configSchema.safeParse(migratedSettings).data, configSchema.parse(settings))) {
+        throw new ConfigurationError(path, "Migration produced an invalid configuration");
+      }
+      const file = await lstat(path);
+      if (!file.isFile()) throw new ConfigurationError(path, "Refusing to migrate a non-regular configuration file");
+      const mode = file.mode & 0o777;
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+      let backup = `${path}.bak.${stamp}`;
+      for (let suffix = 1; ; suffix++) {
+        try {
+          await writeFile(backup, source, { encoding: "utf8", flag: "wx", mode });
+          break;
+        } catch (error) {
+          if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error;
+          backup = `${path}.bak.${stamp}.${suffix}`;
+        }
+      }
+      const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
+      try {
+        await writeFile(temporary, migrated, { encoding: "utf8", flag: "wx", mode });
+        if (await readFile(path, "utf8") !== source) {
+          throw new ConfigurationError(path, "Configuration changed during migration");
+        }
+        await rename(temporary, path);
+      } catch (error) {
+        try {
+          await unlink(temporary);
+        } catch (cleanupError) {
+          if (!(cleanupError instanceof Error && "code" in cleanupError && cleanupError.code === "ENOENT")) {
+            throw cleanupError;
+          }
+        }
+        throw error;
+      }
+    }
+  }
+  return settings;
 }
 
 export async function loadConfig(
@@ -140,7 +206,7 @@ export async function loadConfig(
   trusted: boolean,
   globalPath = globalConfigPath(),
 ): Promise<PluginConfig> {
-  let global = await readConfig(globalPath);
+  let global = await readConfig(globalPath, true);
   if (!global) {
     await mkdir(dirname(globalPath), { recursive: true });
     try {
@@ -152,7 +218,7 @@ export async function loadConfig(
     } catch (error) {
       if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error;
     }
-    global = await readConfig(globalPath);
+    global = await readConfig(globalPath, true);
   }
   const local = trusted ? await readConfig(projectConfigPath(cwd)) : undefined;
   return configSchema.parse({
