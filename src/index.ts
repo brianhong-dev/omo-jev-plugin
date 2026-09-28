@@ -1,8 +1,9 @@
-import type { ExtensionAPI } from "@code-yeongyu/senpi";
+import { noticeEntryRenderer, type ExtensionAPI, type ExtensionContext } from "@code-yeongyu/senpi";
 import { z } from "zod";
 import { ConfigurationError, loadConfig, resolveApiKey, type PluginConfig } from "./config.js";
 import { JevDecider, type Candidate, type NextDecision } from "./decision.js";
 import { installedVersion, newerVersion } from "./update.js";
+import { addUsage, emptyUsage, formatUsage, usageEntrySchema, type UsageTotals } from "./usage.js";
 
 const thinkingSchema = z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 
@@ -87,6 +88,28 @@ export default function jevPlugin(pi: ExtensionAPI): void {
   let lastState = "";
   let explicitSkill = false;
   let resultEpoch = 0;
+  let turnUsage: UsageTotals = emptyUsage;
+  let sessionUsage: UsageTotals = emptyUsage;
+
+  function restoreUsage(ctx: ExtensionContext): void {
+    sessionUsage = emptyUsage;
+    turnUsage = emptyUsage;
+    for (const entry of ctx.sessionManager.getBranch()) {
+      if (entry.type !== "custom" || entry.customType !== "jev:usage") continue;
+      const saved = usageEntrySchema.safeParse(entry.data);
+      if (saved.success) sessionUsage = saved.data.session;
+    }
+  }
+
+  pi.registerEntryRenderer("jev:usage", noticeEntryRenderer((entry) => {
+    const parsed = usageEntrySchema.safeParse(entry.data);
+    if (!parsed.success) return;
+    return {
+      title: `Jev usage | turn ${parsed.data.turnIndex + 1}`,
+      why: `Turn: ${formatUsage(parsed.data.turn)}`,
+      extra: [{ text: `Session: ${formatUsage(parsed.data.session)}` }],
+    };
+  }));
 
   function canCall(): boolean {
     return Boolean(
@@ -96,6 +119,7 @@ export default function jevPlugin(pi: ExtensionAPI): void {
   }
 
   pi.on("session_start", async (_event, ctx) => {
+    restoreUsage(ctx);
     config = undefined;
     decider = undefined;
     advice = undefined;
@@ -122,10 +146,12 @@ export default function jevPlugin(pi: ExtensionAPI): void {
       const notice = startupNotice(config);
       if (notice) {
         ctx.ui.notify(notice.message, notice.type);
-        if (notice.type === "info") ctx.ui.setWidget("jev-plugin", [notice.message]);
       }
       if (config.enabled && config.mode !== "off" && resolveApiKey(config)) {
-        decider = new JevDecider(config);
+        decider = new JevDecider(config, undefined, (usage, model) => {
+          turnUsage = addUsage(turnUsage, usage, model);
+          sessionUsage = addUsage(sessionUsage, usage, model);
+        });
       }
     } catch (error) {
       if (error instanceof ConfigurationError || error instanceof Error) {
@@ -135,6 +161,8 @@ export default function jevPlugin(pi: ExtensionAPI): void {
       throw error;
     }
   });
+
+  pi.on("session_tree", (_event, ctx) => restoreUsage(ctx));
 
   pi.on("input", (event) => {
     explicitSkill = /(?:^|\s)(?:\/skill:[a-z0-9-]+|\$skill:[a-z0-9-]+)|^\$[a-z][a-z0-9-]*\b/i
@@ -238,6 +266,12 @@ export default function jevPlugin(pi: ExtensionAPI): void {
     }
   });
 
+  pi.on("turn_end", (event) => {
+    if (!decider) return;
+    pi.appendEntry("jev:usage", { turnIndex: event.turnIndex, turn: turnUsage, session: sessionUsage });
+    turnUsage = emptyUsage;
+  });
+
   pi.on("context", (event) => {
     if (!config || config.mode === "shadow" || config.mode === "off" || !advice) return;
     return {
@@ -273,8 +307,7 @@ export default function jevPlugin(pi: ExtensionAPI): void {
     }
   });
 
-  pi.on("session_shutdown", (_event, ctx) => {
-    ctx.ui.setWidget("jev-plugin", undefined);
+  pi.on("session_shutdown", () => {
     decider = undefined;
     advice = undefined;
   });

@@ -1,4 +1,4 @@
-import { TypeSafeClient, type Questions } from "@typesafe-ai/sdk";
+import { TypeSafeClient, type Questions, type Usage } from "@typesafe-ai/sdk";
 import { z } from "zod";
 import { resolveApiKey, type PluginConfig } from "./config.js";
 
@@ -22,7 +22,12 @@ const choiceAnswer = z.object({
 const noulAnswer = z.object({ type: z.literal("noul"), noul: probability });
 const scoreAnswer = z.object({ type: z.literal("score"), score: z.number() });
 const responseSchema = z.object({
+  model: z.string(),
   answers: z.record(z.string(), z.unknown()),
+  usage: z.object({
+    input_tokens: z.number().int().nonnegative(),
+    output_tokens: z.number().int().nonnegative(),
+  }),
 });
 
 export type NextDecision = {
@@ -67,7 +72,11 @@ function addChoice(questions: Questions, key: string, candidates: readonly Candi
 export class JevDecider {
   private readonly client: TypeSafeClient;
 
-  constructor(private readonly config: PluginConfig, client?: TypeSafeClient) {
+  constructor(
+    private readonly config: PluginConfig,
+    client?: TypeSafeClient,
+    private readonly onUsage?: (usage: Usage, model: string) => void,
+  ) {
     const apiKey = resolveApiKey(config);
     this.client = client ?? new TypeSafeClient({
       ...(apiKey ? { apiKey } : {}),
@@ -116,6 +125,7 @@ export class JevDecider {
       },
       questions,
     }, signal ? { signal } : {}));
+    this.onUsage?.(result.usage, result.model);
     const answers = result.answers;
     const looping = noulAnswer.safeParse(answers["looping"]);
     const progress = scoreAnswer.safeParse(answers["progress"]);
@@ -154,6 +164,7 @@ export class JevDecider {
         },
       },
     }, signal ? { signal } : {}));
+    this.onUsage?.(response.usage, response.model);
     return noulAnswer.parse(response.answers["outsideScope"]).noul;
   }
 }

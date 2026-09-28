@@ -155,6 +155,41 @@ test("rejects a malformed preflight answer rather than granting a verdict", asyn
   }
 });
 
+test("reports usage from a successful Jev decision response", async () => {
+  // Given a real SDK request and a valid response with usage metadata.
+  const { server, client } = serverFor({
+    tool: { type: "choice", choice: "read", confidence: 0.9, probabilities: { read: 0.9, __none__: 0.1 } },
+    toolFits: { type: "noul", noul: 0.9 },
+  });
+  const recorded: { input: number; output: number; model: string }[] = [];
+  try {
+    // When the decision completes.
+    await new JevDecider(config(), client, (usage, model) => {
+      recorded.push({ input: usage.input_tokens, output: usage.output_tokens, model });
+    }).next(state);
+    // Then the usage is attributed to the responding model once.
+    expect(recorded).toEqual([{ input: 5, output: 2, model: "jev-1.13.0" }]);
+  } finally {
+    server.stop(true);
+  }
+});
+
+test("reports usage from a preflight response even if its answer is malformed", async () => {
+  // Given a response that consumed tokens but lacks a valid risk answer.
+  const { server, client } = serverFor({ outsideScope: { type: "noul" } });
+  const recorded: number[] = [];
+  try {
+    // When the preflight parser rejects the answer.
+    await expect(new JevDecider(config(), client, (usage) => {
+      recorded.push(usage.input_tokens);
+    }).risk("Read", "read", { path: "a.ts" })).rejects.toThrow();
+    // Then the completed request's token usage is still counted.
+    expect(recorded).toEqual([5]);
+  } finally {
+    server.stop(true);
+  }
+});
+
 test("keeps loop and progress judgments separate from action selection", async () => {
   // Given a recent failed step and independent typed judgments.
   const active = config();
