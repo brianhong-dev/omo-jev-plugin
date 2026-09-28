@@ -30,6 +30,7 @@ test("records an update card instead of a replaceable status or persistent widge
       on: (name: string, handler: (event: object, ctx: object) => Promise<void>) => handlers.set(name, handler),
       registerEntryRenderer: (name: string, renderer: (entry: { data: unknown }) => unknown) =>
         renderers.set(name, renderer),
+      registerCommand: () => {},
       appendEntry: (type: string, data: unknown) => entries.push({ type, data }),
     } as unknown as Parameters<typeof jevPlugin>[0]);
     await handlers.get("session_start")?.({ type: "session_start" }, {
@@ -75,6 +76,7 @@ test("records a current-version card when the registry matches the installed ver
       on: (name: string, handler: (event: object, ctx: object) => Promise<void>) => handlers.set(name, handler),
       registerEntryRenderer: (name: string, renderer: (entry: { data: unknown }) => unknown) =>
         renderers.set(name, renderer),
+      registerCommand: () => {},
       appendEntry: (type: string, data: unknown) => entries.push({ type, data }),
     } as unknown as Parameters<typeof jevPlugin>[0]);
     await handlers.get("session_start")?.({ type: "session_start" }, {
@@ -296,10 +298,13 @@ test("records shadow recommendations against executed tool results", async () =>
       },
     ];
     const extension = await loadExtensionFromFactory(jevPlugin, cwd, createEventBus(), runtime);
+    const notices: string[] = [];
     const ctx = {
       cwd, isProjectTrusted: () => true,
-      sessionManager: { getBranch: () => [] },
-      ui: { notify: () => {} },
+      sessionManager: { getBranch: () => history.map((entry) => ({
+        type: "custom", customType: entry.type, data: entry.data,
+      })) },
+      ui: { notify: (message: string) => { notices.push(message); } },
       modelRegistry: { getAvailable: () => [] },
       signal: undefined,
     };
@@ -307,23 +312,35 @@ test("records shadow recommendations against executed tool results", async () =>
       for (const handler of extension.handlers.get(name) ?? []) await Reflect.apply(handler, undefined, [event, ctx]);
     };
 
-    // When the first turn uses the recommendation but fails, and the second uses another tool.
+    // When a followed recommendation fails twice before a successful check, then another tool is used.
     await emit("session_start", { type: "session_start" });
     await emit("before_agent_start", {
       type: "before_agent_start", prompt: "Inspect", systemPromptOptions: { skills: [] },
     });
     await emit("turn_start", { type: "turn_start", turnIndex: 0, timestamp: 0 });
-    await emit("tool_result", { type: "tool_result", toolName: "read", isError: true, content: [] });
+    await emit("tool_result", { type: "tool_result", toolName: "read", input: {}, isError: true, content: [] });
+    await emit("tool_result", { type: "tool_result", toolName: "read", input: {}, isError: true, content: [] });
+    await emit("tool_result", { type: "tool_result", toolName: "bash",
+      input: { command: "bun test" }, isError: false, content: [] });
     await emit("turn_end", { type: "turn_end", turnIndex: 0 });
     await emit("turn_start", { type: "turn_start", turnIndex: 1, timestamp: 1 });
-    await emit("tool_result", { type: "tool_result", toolName: "bash", isError: false, content: [] });
+    await emit("tool_result", { type: "tool_result", toolName: "bash",
+      input: { command: "bun test" }, isError: false, content: [] });
+    await emit("tool_result", { type: "tool_result", toolName: "read", input: {}, isError: false, content: [] });
     await emit("turn_end", { type: "turn_end", turnIndex: 1 });
 
     // Then observations distinguish following a recommendation from its outcome.
     expect(history.filter(({ type }) => type === "jev:feedback").map(({ data }) => data)).toEqual([
-      { turnIndex: 0, recommended: "read", followed: true, succeeded: false },
-      { turnIndex: 1, recommended: "read", followed: false },
+      { turnIndex: 0, recommended: "read", followed: true, succeeded: false,
+        firstTool: "read", toolCalls: 3, repeatedErrors: 1, checkSucceeded: true },
+      { turnIndex: 1, recommended: "read", followed: true, succeeded: true,
+        firstTool: "bash", toolCalls: 2, repeatedErrors: 0, checkSucceeded: false },
     ]);
+    const replay = extension.commands.get("jev-shadow-report");
+    expect(replay).toBeDefined();
+    const noticesBeforeReplay = notices.length;
+    if (replay) await Reflect.apply(replay.handler, undefined, ["", ctx]);
+    expect(notices).toHaveLength(noticesBeforeReplay + 1);
   } finally {
     server.stop(true);
     await rm(cwd, { recursive: true, force: true });
