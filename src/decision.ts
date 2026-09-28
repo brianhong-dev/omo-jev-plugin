@@ -1,8 +1,9 @@
 import { TypeSafeClient, type Questions, type Usage } from "@typesafe-ai/sdk";
+import { readFile } from "node:fs/promises";
 import { z } from "zod";
 import { resolveApiKey, type PluginConfig } from "./config.js";
 
-export type Candidate = { readonly name: string; readonly description: string };
+export type Candidate = { readonly name: string; readonly description: string; readonly filePath?: string };
 export type NextState = {
   readonly request: string;
   readonly lastResults: readonly string[];
@@ -76,6 +77,7 @@ export class JevDecider {
     private readonly config: PluginConfig,
     client?: TypeSafeClient,
     private readonly onUsage?: (usage: Usage, model: string) => void,
+    private readonly onRequest?: () => void,
   ) {
     const apiKey = resolveApiKey(config);
     this.client = client ?? new TypeSafeClient({
@@ -88,7 +90,7 @@ export class JevDecider {
     });
   }
 
-  async next(state: NextState, signal?: AbortSignal): Promise<NextDecision> {
+  async next(state: NextState, signal?: AbortSignal, availableCalls = 1): Promise<NextDecision> {
     const questions: Questions = {};
     if (this.config.decisions.nextAction || this.config.decisions.toolDiscovery) {
       addChoice(questions, "tool", state.tools);
@@ -118,6 +120,7 @@ export class JevDecider {
       };
     }
     if (Object.keys(questions).length === 0) return {};
+    this.onRequest?.();
     const result = responseSchema.parse(await this.client.systemOne({
       state: {
         request: state.request.slice(0, this.config.limits.stateChars),
@@ -131,7 +134,32 @@ export class JevDecider {
     const progress = scoreAnswer.safeParse(answers["progress"]);
     const complete = noulAnswer.safeParse(answers["complete"]);
     const tool = select(answers, "tool", state.tools, this.config);
-    const skill = select(answers, "skill", state.skills, this.config);
+    let skill = select(answers, "skill", state.skills, this.config);
+    if (skill && this.config.skillRerank && availableCalls >= 2 && state.skills.length >= 24) {
+      const ranked = choiceAnswer.safeParse(answers["skill"]);
+      if (ranked.success) {
+        const shortlist = Object.entries(ranked.data.probabilities)
+          .filter(([name]) => state.skills.some((candidate) => candidate.name === name))
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 3)
+          .flatMap(([name]) => state.skills.filter((candidate) => candidate.name === name));
+        const detailed = await Promise.all(shortlist.map(async (candidate) => ({
+          name: candidate.name,
+          description: candidate.filePath
+            ? `${candidate.description}\n${(await readFile(candidate.filePath, "utf8")).slice(0, 500)}`
+            : candidate.description,
+        })));
+        const rerankQuestions: Questions = {};
+        addChoice(rerankQuestions, "skill", detailed);
+        this.onRequest?.();
+        const reranked = responseSchema.parse(await this.client.systemOne({
+          state: { request: state.request.slice(0, this.config.limits.stateChars) },
+          questions: rerankQuestions,
+        }, signal ? { signal } : {}));
+        this.onUsage?.(reranked.usage, reranked.model);
+        skill = select(reranked.answers, "skill", detailed, this.config);
+      }
+    }
     const model = select(answers, "model", state.models, this.config);
     const thinking = select(answers, "thinking", state.thinking, this.config);
     return {

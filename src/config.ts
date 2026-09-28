@@ -57,6 +57,7 @@ const configSchema = z.strictObject({
   }).prefault({}),
   includeToolOutput: z.boolean().default(false),
   includeToolErrors: z.boolean().default(false),
+  skillRerank: z.boolean().default(false),
   preflightOnError: z.enum(["allow", "block"]).default("allow"),
 });
 
@@ -114,6 +115,7 @@ async function readConfig(path: string): Promise<ConfigInput | undefined> {
     }).optional(),
     includeToolOutput: z.boolean().optional(),
     includeToolErrors: z.boolean().optional(),
+    skillRerank: z.boolean().optional(),
     preflightOnError: z.enum(["allow", "block"]).optional(),
   }).safeParse(value);
   if (!result.success) throw new ConfigurationError(path, z.prettifyError(result.error));

@@ -85,6 +85,7 @@ Jev 판단은 사용자 요청이 시작될 때만이 아니라, **도구 결과
 - `limits.timeoutMs`, `limits.maxCallsPerAgentRun`, `limits.stateChars`: 호출 시간(기본 1,000ms), 실행당 최대 호출 수(30회), 요청·결과 텍스트 길이(2,000자)를 제한합니다.
 - `thresholds.fit`, `thresholds.confidence`, `thresholds.risk`: 적합도, 선택 확신도, 호출 차단 기준입니다. 기본값은 각각 `0.6`, `0.65`, `0.8`입니다.
 - `preflightOnError`: 호출 사전 검사에 실패했을 때 `act` 모드에서 호출을 `allow`(기본값)할지 `block`할지 선택합니다.
+- `skillRerank`: 켜면 스킬이 24개 이상일 때 1차 후보 세 개의 `SKILL.md` 앞 500자까지 읽어 추가 Jev 호출로 재선별합니다. 기본값은 `false`이며 스킬 본문 일부가 TypeSafe에 전송됩니다. 남은 호출 한도가 한 번뿐이면 재선별을 건너뜁니다.
 
 ## 전송되는 데이터와 문제 해결
 
