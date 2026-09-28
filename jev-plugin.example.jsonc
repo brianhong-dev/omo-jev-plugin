@@ -1,16 +1,25 @@
 {
   // Copy to ~/.omo/jev-plugin.jsonc (or .omo/jev-plugin.jsonc in a trusted project).
-  // No TypeSafe API request is made until you set mode to shadow, advise, or act.
+  // No decision API request is made until you set mode to shadow, advise, or act.
   "enabled": true,
   "mode": "advise",
-  "model": "jev-1.13.0",
+  "provider": {
+    "selected": "jev_compatible",
+    "jev_compatible": {
+      "model": "jev-1.13.0"
+      // "apiKey": "your-typesafe-key",
+      // "endpoint": "https://api.typesafe.ai"
+    },
+    "respan-ai": {
+      "model": "respan/span-01-lite"
+      // "apiKey": "your-openrouter-key",
+      // "endpoint": "https://openrouter.ai"
+    }
+  },
   "display": {
     "startup": true,
     "decisions": false
   },
-  // Optional. File apiKey takes precedence over TYPESAFE_API_KEY.
-  // "apiKey": "your-typesafe-key",
-  // "endpoint": "https://api.typesafe.ai",
   "decisions": {
     "skills": true,
     "nextAction": true,
@@ -27,6 +36,7 @@
   "activatableTools": [],
   "limits": {
     "timeoutMs": 1000,
+    "spanTimeoutMs": 10000,
     "maxCallsPerAgentRun": 30,
     "stateChars": 2000
   },

@@ -46,18 +46,32 @@ const redactPatternSchema = z.string().min(1).max(128).refine((pattern) => {
   }
 }, "Must be a valid pattern that does not match empty text");
 
+const providerOptionsSchema = z.strictObject({
+  model: z.string().min(1).optional(),
+  apiKey: z.string().trim().optional(),
+  endpoint: z.url().optional(),
+});
+const providerSchema = z.strictObject({
+  selected: z.enum(["jev_compatible", "respan-ai"]).default("jev_compatible"),
+  jev_compatible: providerOptionsSchema.prefault({}),
+  "respan-ai": providerOptionsSchema.prefault({}),
+});
+const partialProviderSchema = z.strictObject({
+  selected: z.enum(["jev_compatible", "respan-ai"]).optional(),
+  jev_compatible: providerOptionsSchema.optional(),
+  "respan-ai": providerOptionsSchema.optional(),
+});
 const configSchema = z.strictObject({
   enabled: z.boolean().default(true),
   mode: z.enum(["off", "shadow", "advise", "act"]).default("off"),
-  model: z.string().min(1).default("jev-1.13.0"),
-  endpoint: z.url().optional(),
-  apiKey: z.string().trim().min(1).optional(),
+  provider: providerSchema.prefault({}),
   models: z.array(z.string().min(1)).max(16).default([]),
   activatableTools: z.array(z.string().min(1)).max(254).default([]),
   decisions: decisionsSchema.prefault({}),
   display: displaySchema.prefault({}),
   limits: z.strictObject({
     timeoutMs: z.number().int().min(100).max(30_000).default(1_000),
+    spanTimeoutMs: z.number().int().min(100).max(30_000).default(10_000),
     maxCallsPerAgentRun: z.number().int().min(1).max(1_000).default(30),
     stateChars: z.number().int().min(100).max(16_000).default(2_000),
   }).prefault({}),
@@ -78,8 +92,16 @@ type ConfigInput = z.input<typeof configSchema>;
 export type PluginConfig = z.output<typeof configSchema>;
 const defaultsMigrationId = "jev-defaults-v1";
 
+export function decisionModel(config: PluginConfig): string {
+  return config.provider.selected === "respan-ai"
+    ? config.provider["respan-ai"].model ?? "respan/span-01-lite"
+    : config.provider.jev_compatible.model ?? "jev-1.13.0";
+}
+
 export function resolveApiKey(config: PluginConfig, environment = process.env): string | undefined {
-  return config.apiKey ?? (environment["TYPESAFE_API_KEY"]?.trim() || undefined);
+  return config.provider.selected === "respan-ai"
+    ? config.provider["respan-ai"].apiKey || (environment["OPENROUTER_API_KEY"]?.trim() || undefined)
+    : config.provider.jev_compatible.apiKey || (environment["TYPESAFE_API_KEY"]?.trim() || undefined);
 }
 
 export class ConfigurationError extends Error {
@@ -107,9 +129,11 @@ async function readConfig(path: string, migrateDefaults = false): Promise<Config
   const result = z.strictObject({
     enabled: z.boolean().optional(),
     mode: z.enum(["off", "shadow", "advise", "act"]).optional(),
+    provider: partialProviderSchema.optional(),
     model: z.string().min(1).optional(),
     endpoint: z.url().optional(),
-    apiKey: z.string().trim().min(1).optional(),
+    apiKey: z.string().trim().optional(),
+    openrouterApiKey: z.string().trim().optional(),
     models: z.array(z.string().min(1)).optional(),
     activatableTools: z.array(z.string().min(1)).optional(),
     decisions: partialDecisionsSchema.optional(),
@@ -119,6 +143,7 @@ async function readConfig(path: string, migrateDefaults = false): Promise<Config
     }).optional(),
     limits: z.strictObject({
       timeoutMs: z.number().int().min(100).max(30_000).optional(),
+      spanTimeoutMs: z.number().int().min(100).max(30_000).optional(),
       maxCallsPerAgentRun: z.number().int().min(1).max(1_000).optional(),
       stateChars: z.number().int().min(100).max(16_000).optional(),
     }).optional(),
@@ -136,13 +161,47 @@ async function readConfig(path: string, migrateDefaults = false): Promise<Config
     _migrations: z.array(z.string()).optional(),
   }).safeParse(value);
   if (!result.success) throw new ConfigurationError(path, z.prettifyError(result.error));
-  const { _migrations: history, ...settings } = result.data;
-  if (migrateDefaults && !history?.includes(defaultsMigrationId)) {
+  const { _migrations: history, model, endpoint, apiKey, openrouterApiKey, ...settings } = result.data;
+  const legacy = model !== undefined || endpoint !== undefined
+    || apiKey !== undefined || openrouterApiKey !== undefined;
+  if (legacy && !migrateDefaults) {
+    throw new ConfigurationError(path, "Move legacy model, endpoint and API keys under provider");
+  }
+  const selected: "jev_compatible" | "respan-ai" =
+    model === "respan/span-01" || model === "respan/span-01-lite" ? "respan-ai" : "jev_compatible";
+  if (legacy && settings.provider) {
+    throw new ConfigurationError(path, "Cannot combine legacy model or API keys with provider");
+  }
+  const migratedSettings = legacy ? {
+    ...settings,
+    provider: {
+      selected,
+      jev_compatible: {
+        ...(model && selected === "jev_compatible" ? { model } : {}),
+        ...(apiKey !== undefined ? { apiKey } : {}),
+        ...(!model || selected === "jev_compatible" ? (endpoint ? { endpoint } : {}) : {}),
+      },
+      "respan-ai": {
+        ...(model && selected === "respan-ai" ? { model } : {}),
+        ...(openrouterApiKey !== undefined ? { apiKey: openrouterApiKey } : {}),
+        ...(selected === "respan-ai" && endpoint ? { endpoint } : {}),
+      },
+    },
+  } : settings;
+  if (migrateDefaults && (!history?.includes(defaultsMigrationId) || legacy)) {
     const defaults = configSchema.parse({});
     const formattingOptions = { insertSpaces: true, tabSize: 2, eol: source.includes("\r\n") ? "\r\n" : "\n" };
     let migrated = source;
+    if (legacy) {
+      for (const key of ["model", "endpoint", "apiKey", "openrouterApiKey"]) {
+        if (Object.hasOwn(result.data, key)) {
+          migrated = applyEdits(migrated, modify(migrated, [key], undefined, { formattingOptions }));
+        }
+      }
+      migrated = applyEdits(migrated, modify(migrated, ["provider"], migratedSettings.provider, { formattingOptions }));
+    }
     for (const [key, defaultValue] of Object.entries(defaults)) {
-      const current = Object.entries(settings).find(([name]) => name === key)?.[1];
+      const current = Object.entries(migratedSettings).find(([name]) => name === key)?.[1];
       if (current === undefined) {
         migrated = applyEdits(migrated, modify(migrated, [key], defaultValue, { formattingOptions }));
       } else if (defaultValue !== null && typeof defaultValue === "object" && !Array.isArray(defaultValue)
@@ -155,14 +214,15 @@ async function readConfig(path: string, migrateDefaults = false): Promise<Config
       }
     }
     if (migrated !== source) {
-      const nextHistory = [...history ?? [], defaultsMigrationId];
+      const nextHistory = history?.includes(defaultsMigrationId)
+        ? history : [...history ?? [], defaultsMigrationId];
       migrated = applyEdits(migrated, modify(migrated, ["_migrations"], nextHistory, { formattingOptions }));
       const errors: ParseError[] = [];
       const verified: unknown = parse(migrated, errors, { allowTrailingComma: true });
       const document = z.record(z.string(), z.unknown()).safeParse(verified);
-      const { _migrations: applied, ...migratedSettings } = document.success ? document.data : {};
+      const { _migrations: applied, ...persisted } = document.success ? document.data : {};
       if (errors.length || !isDeepStrictEqual(applied, nextHistory)
-        || !isDeepStrictEqual(configSchema.safeParse(migratedSettings).data, configSchema.parse(settings))) {
+        || !isDeepStrictEqual(configSchema.safeParse(persisted).data, configSchema.parse(migratedSettings))) {
         throw new ConfigurationError(path, "Migration produced an invalid configuration");
       }
       const file = await lstat(path);
@@ -198,7 +258,7 @@ async function readConfig(path: string, migrateDefaults = false): Promise<Config
       }
     }
   }
-  return settings;
+  return migratedSettings;
 }
 
 export async function loadConfig(
@@ -224,6 +284,12 @@ export async function loadConfig(
   return configSchema.parse({
     ...global,
     ...local,
+    provider: {
+      ...global?.provider,
+      ...local?.provider,
+      jev_compatible: { ...global?.provider?.jev_compatible, ...local?.provider?.jev_compatible },
+      "respan-ai": { ...global?.provider?.["respan-ai"], ...local?.provider?.["respan-ai"] },
+    },
     decisions: { ...global?.decisions, ...local?.decisions },
     display: { ...global?.display, ...local?.display },
     limits: { ...global?.limits, ...local?.limits },

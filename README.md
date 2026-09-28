@@ -1,6 +1,6 @@
 # omo-jev-plugin
 
-[Jev](https://docs.typesafe.ai/)의 구조화된 판단을 [OmO](https://www.npmjs.com/package/omo-ai) / senpi 에이전트에 연결하는 플러그인입니다. 작업 중 스킬과 다음 도구의 적합성을 평가하고, 반복이나 완료 가능성을 살펴 에이전트에 짧은 제안을 전달합니다. Jev가 도구를 직접 실행하거나 senpi의 권한 검사를 대신하지는 않습니다.
+[Jev](https://docs.typesafe.ai/) 또는 OpenRouter의 [Span-01](https://openrouter.ai/respan/span-01)·[Span-01 Lite](https://openrouter.ai/respan/span-01-lite)의 구조화된 판단을 [OmO](https://www.npmjs.com/package/omo-ai) / senpi 에이전트에 연결하는 플러그인입니다. 작업 중 스킬과 다음 도구의 적합성을 평가하고, 반복이나 완료 가능성을 살펴 에이전트에 짧은 제안을 전달합니다. 판단 모델이 도구를 직접 실행하거나 senpi의 권한 검사를 대신하지는 않습니다.
 
 ## 설치
 
@@ -12,21 +12,23 @@ omo install npm:omo-jev-plugin
 
 플러그인 로딩 시 npm에 새 버전이 있으면 설정 파일과 API 키를 확인하기 전에 UI로 업데이트를 안내합니다. `omo update npm:omo-jev-plugin`으로 업데이트할 수 있습니다. npm 조회가 실패해도 플러그인 시작은 계속됩니다.
 
-Jev API 키는 `~/.omo/jev-plugin.jsonc`의 `apiKey` 또는 **OmO/senpi를 실행하는 프로세스의 환경 변수** `TYPESAFE_API_KEY`로 설정하세요. 설정 파일의 값이 우선하며, 없으면 환경 변수를 사용합니다. API 주소도 `endpoint`로 지정할 수 있습니다. 두 값은 프로젝트별 설정 파일에서도 지정할 수 있으므로 그 파일을 공유할 때 키가 포함되지 않도록 주의하세요. 키 발급과 API 사용법은 [TypeSafe 문서](https://docs.typesafe.ai/introduction/quickstart)를 참고하세요. 키가 어느 쪽에도 없으면 플러그인 로딩 직후 UI에 경고를 표시하고 Jev 판단을 실행하지 않습니다.
+API 키는 `~/.omo/jev-plugin.jsonc`의 `provider.jev_compatible.apiKey` 또는 `provider.respan-ai.apiKey`에 공급자별로 설정합니다. 없으면 각각 **OmO/senpi를 실행하는 프로세스의 환경 변수** `TYPESAFE_API_KEY` 또는 `OPENROUTER_API_KEY`를 사용합니다. 공급자별 `endpoint`도 설정할 수 있습니다. 프로젝트별 설정에 키를 넣었다면 파일을 공유할 때 주의하세요. 선택한 공급자의 키가 없으면 로딩 직후 경고하고 판단 요청을 보내지 않습니다.
 
-설치만으로 Jev API를 호출하지는 않습니다. 플러그인을 처음 로드할 때 기본 설정 파일이 자동 생성되며, Jev를 사용하려면 아래처럼 모드를 변경해야 합니다.
+설치만으로 판단 API를 호출하지는 않습니다. 플러그인을 처음 로드할 때 기본 설정 파일이 자동 생성되며, 사용하려면 아래처럼 모드를 변경해야 합니다.
 
 ## 설정
 
-처음 로드하면 `~/.omo/jev-plugin.jsonc`가 `off` 모드의 기본값으로 생성됩니다. 기존 전역 설정 파일에서 기본 항목이 빠진 경우, 로드할 때 원본을 `jev-plugin.jsonc.bak.<타임스탬프>`에 백업하고 누락된 항목을 추가한 뒤 임시 파일로 교체합니다. 적용 이력은 파일의 `_migrations` 배열에 남겨 같은 마이그레이션을 반복하지 않습니다. 지정한 값과 JSONC 주석은 유지합니다. 프로젝트별 설정은 상속을 위해 필요한 항목만 적는 형태로 유지하며 자동으로 기본값을 채우지 않습니다. 파일에서 `mode`를 변경하거나 [`설정 예시`](./jev-plugin.example.jsonc)를 참고하세요. 이 파일은 OmO의 `omo.jsonc`와 별개입니다. 설정 변경 후에는 새 세션을 시작하거나 확장을 다시 로드하세요.
+처음 로드하면 `~/.omo/jev-plugin.jsonc`가 `off` 모드의 기본값으로 생성됩니다. 기존 전역 설정의 최상위 `model`, `apiKey`, `openrouterApiKey`, `endpoint`는 로드할 때 `provider` 아래로 옮깁니다. 파일을 바꾸기 전에 원본을 `jev-plugin.jsonc.bak.<타임스탬프>`에 백업하며, `_migrations`에 적용 이력을 기록합니다. 기존 설정값과 주석은 가능한 한 유지합니다. 프로젝트별 설정은 상속에 필요한 항목만 적으며 자동으로 채우지 않습니다. [`설정 예시`](./jev-plugin.example.jsonc)를 참고하세요. 이 파일은 OmO의 `omo.jsonc`와 별개입니다. 설정 변경 후에는 새 세션을 시작하거나 확장을 다시 로드하세요.
 
 가장 간단한 설정은 다음과 같습니다.
 
 ```jsonc
 {
   "mode": "advise",
-  "apiKey": "your-typesafe-key",
-  "endpoint": "https://api.typesafe.ai",
+  "provider": {
+    "selected": "jev_compatible",
+    "jev_compatible": { "apiKey": "your-typesafe-key" }
+  },
   "display": {
     "startup": true,
     "decisions": true
@@ -40,7 +42,25 @@ Jev API 키는 `~/.omo/jev-plugin.jsonc`의 `apiKey` 또는 **OmO/senpi를 실�
 }
 ```
 
-프로젝트별 설정은 해당 프로젝트의 `.omo/jev-plugin.jsonc`에 직접 넣을 수 있습니다. 프로젝트 파일은 자동 생성되지 않고, 프로젝트가 신뢰된 경우에만 읽으며 전역 설정을 덮어씁니다. `decisions`, `display`, `limits`, `thresholds`는 항목별로 병합되고 나머지 항목은 프로젝트 값으로 교체됩니다. 알 수 없는 설정 항목이나 잘못된 JSONC가 있으면 플러그인을 비활성화하고 경고를 표시합니다.
+### 판단 공급자 선택
+
+`provider.selected`는 `jev_compatible`(기본값) 또는 `respan-ai`입니다. 각 공급자의 `model`, `apiKey`, `endpoint`는 해당 공급자 항목 안에 둡니다. 모델 ID를 생략하면 각각 `jev-1.13.0`, `respan/span-01-lite`를 사용합니다. 예를 들어 Respan을 쓰려면:
+
+```jsonc
+{
+  "mode": "advise",
+  "provider": {
+    "selected": "respan-ai",
+    "respan-ai": { "apiKey": "your-openrouter-key" }
+  }
+}
+```
+
+`provider.respan-ai.apiKey`가 없으면 `OPENROUTER_API_KEY`를 사용합니다. 전역 설정에 두 공급자의 옵션을 보관하고 신뢰된 프로젝트에서는 `provider.selected`만 덮어쓸 수 있습니다.
+
+`jev_compatible`은 `noul`, `choice`, `score`를 직접 사용합니다. `respan-ai`는 기본적으로 OpenRouter의 무료 **Span-01 Lite**로 동작하며, 현재 실제 API가 허용하는 `noul`만 직접 사용합니다. 플러그인은 선택지나 점수 단계마다 `noul`을 평가해 결과를 조합합니다. 따라서 Jev의 직접 선택·점수와 결과가 달라질 수 있습니다. `respan-ai.model`을 지정하면 기본 모델 ID를 바꿀 수 있지만 판단 방식은 공급자 기준으로 유지됩니다. `provider` 설정은 플러그인의 판단 모델용이며, 최상위 `models`는 에이전트 세션 모델 라우팅 후보입니다.
+
+프로젝트별 설정은 해당 프로젝트의 `.omo/jev-plugin.jsonc`에 직접 넣을 수 있습니다. 프로젝트 파일은 자동 생성되지 않고, 프로젝트가 신뢰된 경우에만 읽으며 전역 설정을 덮어씁니다. `provider`의 공급자별 항목과 `decisions`, `display`, `limits`, `thresholds`는 항목별로 병합되고 나머지는 프로젝트 값으로 교체됩니다. 알 수 없는 설정 항목이나 잘못된 JSONC가 있으면 플러그인을 비활성화하고 경고를 표시합니다.
 
 | 모드 | 동작 |
 | --- | --- |
@@ -55,7 +75,7 @@ Jev API 키는 `~/.omo/jev-plugin.jsonc`의 `apiKey` 또는 **OmO/senpi를 실�
 
 `shadow` 모드에서는 도구 추천 여부, 첫 실제 도구, 추천 도구의 첫 결과, 해당 턴의 성공한 테스트·타입 검사·빌드 명령 및 연속된 동일 도구 오류 횟수를 `Jev shadow` 이력 카드로 남깁니다. `/jev-shadow-report` 명령은 현재 세션 브랜치의 이력을 다시 집계해 추천 수, 실제 사용 수, 추천 도구 첫 결과 성공 수, 추천을 따른 뒤 성공한 검사 명령 수, 첫 도구가 추천과 달랐던 횟수, 연속 오류 호출 수를 보여줍니다. 검사 명령은 알려진 `bun`/`npm` 테스트·빌드·타입 검사 명령에 한하며, 사용자 요청 전체의 검증 성공을 뜻하지 않습니다. 이 수치는 `shadow`에서 관찰한 행동과 결과일 뿐, Jev를 실제 적용했을 때와의 인과적 성능 차이나 불필요한 호출임을 증명하지 않습니다. 스킬 로드 여부는 포함되지 않습니다.
 
-예상 비용은 [TypeSafe Jev 1.13 공개 요금](https://docs.typesafe.ai/models)을 기준으로 입력 100만 토큰당 $0.042, 출력 무료로 계산합니다. API 응답의 모델이 `jev-1.13.0`이 아닌 경우 요금을 임의로 추정하지 않고 비용을 `unavailable`로 표시합니다. 실패한 API 요청에는 사용량 정보가 없어 집계할 수 없습니다.
+예상 비용은 API 응답의 `usage.cost`가 있으면 그 값을 사용합니다. 그렇지 않으면 [TypeSafe Jev 1.13 공개 요금](https://docs.typesafe.ai/models)인 입력 100만 토큰당 $0.042, [Span-01 공개 요금](https://openrouter.ai/respan/span-01)인 입력 100만 토큰당 $0.02, Span-01 Lite 무료 요금을 적용합니다(출력 무료). 알 수 없는 모델은 비용을 `unavailable`로 표시합니다. 실패한 API 요청에는 사용량 정보가 없어 집계할 수 없습니다.
 
 ### 판단 범위
 
@@ -78,12 +98,11 @@ Jev 판단은 사용자 요청이 시작될 때만이 아니라, **도구 결과
 
 추가 옵션은 예시 설정 파일에 있습니다.
 
-- `model`: Jev API 모델. 기본값 `jev-1.13.0`.
-- `apiKey`: 설정 파일의 API 키. 지정하지 않으면 `TYPESAFE_API_KEY`를 사용합니다.
-- `endpoint`: Jev API 기본 주소. 지정하지 않으면 SDK 기본 주소를 사용합니다.
+- `provider.selected`: `jev_compatible` 또는 `respan-ai`.
+- `provider.jev_compatible`, `provider.respan-ai`: 각 공급자의 `model`, `apiKey`, `endpoint`. 미지정 키는 각각 `TYPESAFE_API_KEY`, `OPENROUTER_API_KEY`에서 읽고, 주소는 TypeSafe SDK 또는 OpenRouter 기본 주소를 사용합니다.
 - `models`: `modelRouting` 후보. `["provider/model-id"]` 형식이며 현재 세션에서 사용 가능한 모델만 고려합니다.
 - `activatableTools`: `toolActivation`의 도구 이름 허용 목록. 기본값은 빈 목록입니다.
-- `limits.timeoutMs`, `limits.maxCallsPerAgentRun`, `limits.stateChars`: 호출 시간(기본 1,000ms), 실행당 최대 호출 수(30회), 요청·결과 텍스트 길이(2,000자)를 제한합니다. 마지막 한 번의 호출은 최근 실패가 있으면 회복 판단, 성공한 검사 결과가 있으면 완료 근거 매핑, 그 밖에 진행도 결과가 있으면 진행 평가, 첫 턴이면 다음 행동·도구 발견·스킬 순으로 집중합니다. 직접 검사 결과 없이 완료만 묻는 턴은 호출을 아껴 나중 결과를 확인합니다.
+- `limits.timeoutMs`, `limits.spanTimeoutMs`, `limits.maxCallsPerAgentRun`, `limits.stateChars`: Jev 호출 시간(기본 1,000ms), Span-01 계열 호출 시간(기본 10,000ms), 실행당 최대 호출 수(30회), 요청·결과 텍스트 길이(2,000자)를 제한합니다. 마지막 한 번의 호출은 최근 실패가 있으면 회복 판단, 성공한 검사 결과가 있으면 완료 근거 매핑, 그 밖에 진행도 결과가 있으면 진행 평가, 첫 턴이면 다음 행동·도구 발견·스킬 순으로 집중합니다. 직접 검사 결과 없이 완료만 묻는 턴은 호출을 아껴 나중 결과를 확인합니다.
 - `thresholds.fit`, `thresholds.confidence`, `thresholds.risk`: 적합도, 선택 확신도, 호출 차단 기준입니다. 기본값은 각각 `0.6`, `0.65`, `0.8`입니다.
 - `preflightOnError`: 호출 사전 검사에 실패했을 때 `act` 모드에서 호출을 `allow`(기본값)할지 `block`할지 선택합니다.
 - `skillRerank`: 켜면 스킬이 24개 이상일 때 1차 후보 세 개의 `SKILL.md` 앞 500자까지 읽어 추가 Jev 호출로 재선별합니다. 기본값은 `false`이며 스킬 본문 일부가 TypeSafe에 전송됩니다. 남은 호출 한도가 두 번 이하이면 이후 판단을 위해 재선별을 건너뜁니다.
@@ -91,8 +110,8 @@ Jev 판단은 사용자 요청이 시작될 때만이 아니라, **도구 결과
 
 ## 전송되는 데이터와 문제 해결
 
-Jev API를 켜면 잘린 사용자 요청과 최근 도구 이름·성공/오류 상태가 TypeSafe로 전송됩니다. 스킬·도구·모델 후보의 이름과 설명도 질문에 포함됩니다. 완료 판단을 켜면 최대 6개 요구 항목과 최근 성공한 테스트·빌드 검사 결과의 ID·종류·도구 이름도 전송됩니다. 6개를 넘는 항목은 완료 근거가 충분하다고 표시하지 않습니다. `curl --fail` 같은 동작 확인은 `includeToolOutput`을 켜고 결과 텍스트가 있을 때만 근거 후보가 됩니다. 도구 출력 본문은 기본적으로 전송하지 않습니다. `includeToolErrors: true`로 설정하면 실패한 도구의 텍스트 일부만, `includeToolOutput: true`로 설정하면 성공한 결과를 포함한 텍스트 일부를 전송합니다. 결과 텍스트는 `limits.stateChars`로 길이를 제한하지만 오류 메시지에도 비밀값이 들어갈 수 있습니다. `toolPreflight`를 켜면 해당 호출의 인자도 길이를 제한해 보냅니다. 민감한 작업에서는 전송 범위를 검토하세요.
+판단 API를 켜면 잘린 사용자 요청과 최근 도구 이름·성공/오류 상태가 Jev 선택 시 TypeSafe로, Span-01 선택 시 OpenRouter를 거쳐 Respan으로 전송됩니다. 스킬·도구·모델 후보의 이름과 설명도 질문에 포함됩니다. 완료 판단을 켜면 최대 6개 요구 항목과 최근 성공한 테스트·빌드 검사 결과의 ID·종류·도구 이름도 전송됩니다. 6개를 넘는 항목은 완료 근거가 충분하다고 표시하지 않습니다. `curl --fail` 같은 동작 확인은 `includeToolOutput`을 켜고 결과 텍스트가 있을 때만 근거 후보가 됩니다. 도구 출력 본문은 기본적으로 전송하지 않습니다. `includeToolErrors: true`로 설정하면 실패한 도구의 텍스트 일부만, `includeToolOutput: true`로 설정하면 성공한 결과를 포함한 텍스트 일부를 전송합니다. 결과 텍스트는 `limits.stateChars`로 길이를 제한하지만 오류 메시지에도 비밀값이 들어갈 수 있습니다. `toolPreflight`를 켜면 해당 호출의 인자도 길이를 제한해 보냅니다. 민감한 작업에서는 전송 범위를 검토하세요.
 
-제안용 Jev 요청이 실패하면 해당 판단을 건너뛰고 senpi의 일반 동작을 유지합니다. `toolPreflight`의 실패 시 차단 여부는 `preflightOnError`가 결정합니다. 플러그인이 동작하지 않으면 `TYPESAFE_API_KEY`, `mode`, JSONC 오류 경고, 프로젝트 신뢰 상태를 확인하세요.
+제안용 판단 요청이 실패하면 해당 판단을 건너뛰고 senpi의 일반 동작을 유지합니다. `toolPreflight`의 실패 시 차단 여부는 `preflightOnError`가 결정합니다. 플러그인이 동작하지 않으면 선택한 모델의 API 키, `mode`, JSONC 오류 경고, 프로젝트 신뢰 상태를 확인하세요.
 
 개발과 릴리스에 참여하려면 [CONTRIBUTING.md](./CONTRIBUTING.md)를 참고하세요.

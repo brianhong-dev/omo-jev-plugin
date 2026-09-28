@@ -21,6 +21,18 @@ test("does not report a misleading price for an unknown model", () => {
   expect(formatUsage(total)).toContain("unavailable");
 });
 
+test("accounts for both Span-01 tiers and prefers an actual response cost", () => {
+  // Given paid, free, and provider-reported usage.
+  const paid = { input_tokens: 1_000_000, output_tokens: 12 };
+  const lite = { input_tokens: 2_000_000, output_tokens: 3 };
+  // When they accumulate under their returned model IDs.
+  const total = addUsage(addUsage(addUsage(emptyUsage, paid, "respan/span-01-20260925"),
+    lite, "respan/span-01-lite-20260925"),
+    { input_tokens: 100, output_tokens: 0, cost: 0.001 }, "respan/span-01");
+  // Then Lite is free and an actual billed cost supersedes the list price.
+  expect(total).toEqual({ inputTokens: 3_000_100, outputTokens: 15, estimatedCost: 0.021 });
+});
+
 test("formats small charges without rounding them to zero", () => {
   // Given a single input token at the published price.
   const total = addUsage(emptyUsage, { input_tokens: 1, output_tokens: 0 }, "jev-1.13.0");
