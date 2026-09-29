@@ -285,7 +285,7 @@ export async function loadConfig(
     await mkdir(dirname(globalPath), { recursive: true });
     try {
       const { telemetry: _telemetry, ...defaults } = configSchema.parse({});
-      await writeFile(globalPath, `${JSON.stringify(defaults, null, 2)}\n`, {
+      await writeFile(globalPath, `${JSON.stringify({ ...defaults, mode: "advise" }, null, 2)}\n`, {
         encoding: "utf8",
         flag: "wx",
         mode: 0o600,

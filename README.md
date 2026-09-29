@@ -16,7 +16,7 @@ When the plugin loads, it checks npm for a newer version and announces an availa
 
 Set the provider-specific API key in `~/.omo/jev-plugin.jsonc` under `provider.jev_compatible.apiKey` or `provider.respan-ai.apiKey`. If absent, the plugin uses `TYPESAFE_API_KEY` or `OPENROUTER_API_KEY`, respectively, from the **process running OmO/senpi**. Each provider also supports an `endpoint`. Be careful when sharing project configuration containing a key. If the selected provider has no key, the plugin warns on load and makes no decision requests.
 
-Installation alone does not call the decision API. On first load, the plugin creates a default configuration file in `off` mode. Change its mode as described below to enable it.
+On first load, the plugin creates a default configuration file in `advise` mode. Decision requests require an API key for the selected provider.
 
 ### Telemetry
 
@@ -26,7 +26,7 @@ Detailed telemetry is enabled by default and also collects the decision mode, de
 
 ## Configuration
 
-On first load, `~/.omo/jev-plugin.jsonc` is created with `mode: "off"`. Legacy top-level `model`, `apiKey`, `openrouterApiKey`, and `endpoint` settings are moved under `provider` when loaded. Before changing the file, the plugin backs it up as `jev-plugin.jsonc.bak.<timestamp>` and records the migration in `_migrations`, preserving existing settings and comments where possible. A project configuration contains only the fields it needs to override; it is not filled in automatically. See the [example configuration](./jev-plugin.example.jsonc). This file is separate from OmO's `omo.jsonc`. Start a new session or reload the extension after changing settings.
+On first load, `~/.omo/jev-plugin.jsonc` is created with `mode: "advise"`. Existing configuration keeps its mode; if it omits `mode`, the implicit default remains `off`. Legacy top-level `model`, `apiKey`, `openrouterApiKey`, and `endpoint` settings are moved under `provider` when loaded. Before changing the file, the plugin backs it up as `jev-plugin.jsonc.bak.<timestamp>` and records the migration in `_migrations`, preserving existing settings and comments where possible. A project configuration contains only the fields it needs to override; it is not filled in automatically. See the [example configuration](./jev-plugin.example.jsonc). This file is separate from OmO's `omo.jsonc`. Start a new session or reload the extension after changing settings.
 
 The simplest configuration is:
 
@@ -72,9 +72,9 @@ You can place a project override in `.omo/jev-plugin.jsonc`. The plugin does not
 
 | Mode | Behavior |
 | --- | --- |
-| `off` | Do not call Jev. This is the default. |
+| `off` | Do not call Jev. |
 | `shadow` | Record decisions in the session without changing agent behavior. |
-| `advise` | Suggest skills and tool candidates, repetition, and possible completion to the agent. |
+| `advise` | Suggest skills and tool candidates, repetition, and possible completion to the agent. This is the default for newly created configuration files. |
 | `act` | In addition to `advise`, apply individually enabled tool activation, call blocking, model routing, and thinking-level selection. |
 
 `enabled: false` disables decisions regardless of mode. An explicitly invoked skill takes precedence over automatic skill suggestions. When Jev finds no suitable candidate or its confidence is too low, the plugin makes no recommendation.
