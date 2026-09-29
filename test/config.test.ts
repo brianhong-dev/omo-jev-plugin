@@ -22,13 +22,13 @@ async function fixture(): Promise<{ cwd: string; globalPath: string; projectPath
   };
 }
 
-test("creates a private global configuration with network decisions off", async () => {
+test("creates a private global configuration in advise mode", async () => {
   // Given an empty configuration directory.
   const { cwd, globalPath } = await fixture();
   // When config is loaded.
   const config = await loadConfig(cwd, false, globalPath);
-  // Then a persisted default leaves network-dependent decisions off.
-  expect(config.mode).toBe("off");
+  // Then the persisted default enables advice without changing private file permissions.
+  expect(config.mode).toBe("advise");
   const { telemetry: _telemetry, ...persisted } = config;
   expect(JSON.parse(await readFile(globalPath, "utf8"))).toEqual(persisted);
   expect((await stat(globalPath)).mode & 0o777).toBe(0o600);
@@ -147,6 +147,18 @@ test("does not retry a recorded migration when a user removes a default", async 
   const config = await loadConfig(cwd, false, globalPath);
   // Then runtime defaults apply without rewriting the user's file.
   expect(config.includeToolErrors).toBe(false);
+  expect(await readFile(globalPath, "utf8")).toBe(existing);
+  expect((await readdir(cwd)).filter((entry) => entry.startsWith("global.jsonc.bak."))).toHaveLength(0);
+});
+test("keeps an existing mode-free configuration off without rewriting it", async () => {
+  // Given an existing file with the prior migration recorded and no explicit mode.
+  const { cwd, globalPath } = await fixture();
+  const existing = '{ // retain the existing choice\n "_migrations": ["jev-defaults-v1"] }\n';
+  await writeFile(globalPath, existing);
+  // When the configuration is loaded after the new-file default changes.
+  const config = await loadConfig(cwd, false, globalPath);
+  // Then the implicit old mode remains off and the file is untouched.
+  expect(config.mode).toBe("off");
   expect(await readFile(globalPath, "utf8")).toBe(existing);
   expect((await readdir(cwd)).filter((entry) => entry.startsWith("global.jsonc.bak."))).toHaveLength(0);
 });

@@ -16,7 +16,7 @@ omo install npm:omo-jev-plugin
 
 API 키는 `~/.omo/jev-plugin.jsonc`의 `provider.jev_compatible.apiKey` 또는 `provider.respan-ai.apiKey`에 공급자별로 설정합니다. 없으면 각각 **OmO/senpi를 실행하는 프로세스의 환경 변수** `TYPESAFE_API_KEY` 또는 `OPENROUTER_API_KEY`를 사용합니다. 공급자별 `endpoint`도 설정할 수 있습니다. 프로젝트별 설정에 키를 넣었다면 파일을 공유할 때 주의하세요. 선택한 공급자의 키가 없으면 로딩 직후 경고하고 판단 요청을 보내지 않습니다.
 
-설치만으로 판단 API를 호출하지는 않습니다. 플러그인을 처음 로드할 때 기본 설정 파일이 자동 생성되며, 사용하려면 아래처럼 모드를 변경해야 합니다.
+플러그인을 처음 로드할 때 `advise` 모드의 기본 설정 파일이 자동 생성됩니다. 판단 API 호출에는 선택한 공급자의 API 키가 필요합니다.
 
 ### 텔레메트리
 
@@ -26,7 +26,7 @@ API 키는 `~/.omo/jev-plugin.jsonc`의 `provider.jev_compatible.apiKey` 또는 
 
 ## 설정
 
-처음 로드하면 `~/.omo/jev-plugin.jsonc`가 `off` 모드의 기본값으로 생성됩니다. 기존 전역 설정의 최상위 `model`, `apiKey`, `openrouterApiKey`, `endpoint`는 로드할 때 `provider` 아래로 옮깁니다. 파일을 바꾸기 전에 원본을 `jev-plugin.jsonc.bak.<타임스탬프>`에 백업하며, `_migrations`에 적용 이력을 기록합니다. 기존 설정값과 주석은 가능한 한 유지합니다. 프로젝트별 설정은 상속에 필요한 항목만 적으며 자동으로 채우지 않습니다. [`설정 예시`](./jev-plugin.example.jsonc)를 참고하세요. 이 파일은 OmO의 `omo.jsonc`와 별개입니다. 설정 변경 후에는 새 세션을 시작하거나 확장을 다시 로드하세요.
+처음 로드하면 `~/.omo/jev-plugin.jsonc`가 `advise` 모드의 기본값으로 생성됩니다. 기존 설정의 모드는 유지되며 `mode`를 생략했다면 암묵적 기본값은 `off`입니다. 기존 전역 설정의 최상위 `model`, `apiKey`, `openrouterApiKey`, `endpoint`는 로드할 때 `provider` 아래로 옮깁니다. 파일을 바꾸기 전에 원본을 `jev-plugin.jsonc.bak.<타임스탬프>`에 백업하며, `_migrations`에 적용 이력을 기록합니다. 기존 설정값과 주석은 가능한 한 유지합니다. 프로젝트별 설정은 상속에 필요한 항목만 적으며 자동으로 채우지 않습니다. [`설정 예시`](./jev-plugin.example.jsonc)를 참고하세요. 이 파일은 OmO의 `omo.jsonc`와 별개입니다. 설정 변경 후에는 새 세션을 시작하거나 확장을 다시 로드하세요.
 
 가장 간단한 설정은 다음과 같습니다.
 
@@ -72,9 +72,9 @@ API 키는 `~/.omo/jev-plugin.jsonc`의 `provider.jev_compatible.apiKey` 또는 
 
 | 모드 | 동작 |
 | --- | --- |
-| `off` | Jev를 호출하지 않습니다. 기본값입니다. |
+| `off` | Jev를 호출하지 않습니다. |
 | `shadow` | 판단을 세션에 기록하지만 에이전트 동작은 바꾸지 않습니다. |
-| `advise` | 판단 결과 중 스킬·도구 후보, 반복 및 완료 가능성을 에이전트에 제안합니다. |
+| `advise` | 판단 결과 중 스킬·도구 후보, 반복 및 완료 가능성을 에이전트에 제안합니다. 새로 생성하는 설정 파일의 기본값입니다. |
 | `act` | `advise`에 더해, 개별적으로 활성화한 도구 활성화·호출 차단·모델 및 사고 수준 선택을 적용합니다. |
 
 `enabled: false`는 모드와 관계없이 플러그인의 판단을 끕니다. 에이전트가 명시적으로 호출한 스킬은 자동 스킬 제안보다 우선합니다. Jev가 적합한 후보를 찾지 못하거나 응답에 확신이 부족하면 후보를 제안하지 않습니다.

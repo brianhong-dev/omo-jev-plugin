@@ -17,7 +17,7 @@ Runtime integration and its configuration, Jev decision, and update boundaries. 
 - `turn_start` deduplicates an unchanged state fingerprint and shares the configured call budget with `tool_call` preflight.
 - `shadow` records decisions only; `advise` injects hidden context; `act` alone may activate tools or change the session model/thinking level.
 - `context` appends advice to the supplied messages; `tool_call` can block an already selected call but cannot replace it.
-- `config.ts` creates only the global file when absent, with mode `off` and private permissions; project config is read only when the project is trusted.
+- `config.ts` creates only the global file when absent, with mode `advise` and private permissions; existing files without a mode still default to `off`, and project config is read only when the project is trusted.
 - `decision.ts` validates selected candidates and thresholds locally; the SDK client disables retries and logging.
 - `tool_result` retains the last four summaries; actual output text is included only when configured.
 - `config.ts` resolves the API key from the file first, then `TYPESAFE_API_KEY`.
