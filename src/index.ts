@@ -3,6 +3,7 @@ import { noticeEntryRenderer, type ExtensionAPI, type ExtensionContext } from "@
 import { Type } from "typebox";
 import { z } from "zod";
 import { CodeSearchError, searchCode } from "./code-search.js";
+import { registerCua } from "./cua.js";
 import { ConfigurationError, decisionModel, loadConfig, resolveApiKey, type PluginConfig } from "./config.js";
 import { JevDecider, redactText, type Candidate, type NextDecision } from "./decision.js";
 import { requirementsFromRequest, verificationKind, type VerificationResult } from "./evidence.js";
@@ -154,6 +155,7 @@ export default function jevPlugin(
   let searchRegistered = false;
   let reloadPending = false;
   let reloadInFlight = false;
+  let cuaRegistered = false;
 
   async function reloadWhenIdle(ctx: ExtensionContext): Promise<void> {
     if (!reloadPending || reloadInFlight || !ctx.requestReload || !ctx.isIdle() || ctx.hasPendingMessages()
@@ -343,6 +345,14 @@ export default function jevPlugin(
           turnUsage = addUsage(turnUsage, usage, model);
           sessionUsage = addUsage(sessionUsage, usage, model);
         }, () => { callCount++; });
+      }
+      if (decider && config.experimentalCua && !cuaRegistered) {
+        registerCua(pi, {
+          decider: () => config?.experimentalCua && config.enabled && config.mode !== "off"
+            && config.mode !== "shadow" ? decider : undefined,
+          availableCalls: () => config ? config.limits.maxCallsPerAgentRun - callCount : 0,
+        });
+        cuaRegistered = true;
       }
       if (decider && config.experimentalCodeSearch && ctx.isProjectTrusted()) {
         if (!searchRegistered) {
