@@ -52,6 +52,25 @@ API 키는 `~/.omo/jev-plugin.jsonc`의 `provider.jev_compatible.apiKey` 또는 
 
 ### 판단 공급자 선택
 
+TypeSafe를 먼저 사용하다 크레딧이나 쿼터가 소진되면 같은 세션 안에서 로컬 Jev 호환 서버로 전환하려면 `provider.localFallback`을 설정합니다.
+
+```jsonc
+{
+  "provider": {
+    "selected": "jev_compatible",
+    "jev_compatible": { "apiKey": "your-typesafe-key" },
+    "localFallback": {
+      "endpoint": "http://127.0.0.1:18080",
+      "model": "laya-1.0",
+      "apiKey": "your-local-key",
+      "timeoutMs": 10000
+    }
+  }
+}
+```
+
+HTTP 402 또는 HTTP 403/429의 명시적인 쿼터·크레딧 소진 응답이면 실패한 요청을 로컬로 보내고, 이후 요청도 세션을 다시 로드할 때까지 로컬을 사용합니다. 일반적인 속도 제한, 인증 오류, 서버 오류는 소진으로 취급하지 않습니다. 새 세션에서는 TypeSafe를 다시 우선합니다. 로컬 키를 생략하면 `local`을 사용합니다. 로컬 전환은 `jev_compatible`에서만 적용됩니다.
+
 `provider.selected`는 `jev_compatible`(기본값) 또는 `respan-ai`입니다. 각 공급자의 `model`, `apiKey`, `endpoint`는 해당 공급자 항목 안에 둡니다. 모델 ID를 생략하면 각각 `jev-1.13.0`, `respan/span-01-lite`를 사용합니다. 예를 들어 Respan을 쓰려면:
 
 ```jsonc

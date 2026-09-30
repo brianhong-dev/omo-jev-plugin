@@ -52,6 +52,10 @@ The simplest configuration is:
 
 ### Decision provider
 
+To use TypeSafe first and switch to a local Jev-compatible server when account credits or quota are exhausted, configure `provider.localFallback` with `endpoint`, `model`, optional `apiKey`, and `timeoutMs` (default 10000). Keep the TypeSafe key under `provider.jev_compatible` and select `jev_compatible`.
+
+HTTP 402 or an explicit quota/credit exhaustion response with HTTP 403/429 retries the failed request locally. Later requests remain local for the rest of that session; a new session starts with TypeSafe again. Ordinary rate limits, authentication errors, and server failures do not trigger this switch. The local key defaults to `local` when omitted. This option applies only to `jev_compatible`.
+
 `provider.selected` is `jev_compatible` (the default) or `respan-ai`. Each provider has its own `model`, `apiKey`, and `endpoint`. When the model ID is omitted, the defaults are `jev-1.13.0` and `respan/span-01-lite`, respectively. To use Respan:
 
 ```jsonc

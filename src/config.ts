@@ -51,15 +51,23 @@ const providerOptionsSchema = z.strictObject({
   apiKey: z.string().trim().optional(),
   endpoint: z.url().optional(),
 });
+const localFallbackSchema = z.strictObject({
+  endpoint: z.url(),
+  model: z.string().min(1),
+  apiKey: z.string().trim().optional(),
+  timeoutMs: z.number().int().min(100).max(30_000).default(10_000),
+});
 const providerSchema = z.strictObject({
   selected: z.enum(["jev_compatible", "respan-ai"]).default("jev_compatible"),
   jev_compatible: providerOptionsSchema.prefault({}),
   "respan-ai": providerOptionsSchema.prefault({}),
+  localFallback: localFallbackSchema.optional(),
 });
 const partialProviderSchema = z.strictObject({
   selected: z.enum(["jev_compatible", "respan-ai"]).optional(),
   jev_compatible: providerOptionsSchema.optional(),
   "respan-ai": providerOptionsSchema.optional(),
+  localFallback: localFallbackSchema.optional(),
 });
 const configSchema = z.strictObject({
   enabled: z.boolean().default(true),
