@@ -1,6 +1,6 @@
 {
   "name": "omo-jev-plugin",
-  "version": "0.0.10",
+  "version": "0.0.11",
   "description": "Configurable Jev decision layer for OmO and senpi",
   "type": "module",
   "main": "./dist/index.js",
