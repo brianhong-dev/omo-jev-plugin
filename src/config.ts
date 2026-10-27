@@ -51,21 +51,30 @@ const providerOptionsSchema = z.strictObject({
   apiKey: z.string().trim().optional(),
   endpoint: z.url().optional(),
 });
+const localFallbackSchema = z.strictObject({
+  endpoint: z.url(),
+  model: z.string().min(1),
+  apiKey: z.string().trim().optional(),
+  timeoutMs: z.number().int().min(100).max(30_000).default(10_000),
+});
 const providerSchema = z.strictObject({
   selected: z.enum(["jev_compatible", "respan-ai"]).default("jev_compatible"),
   jev_compatible: providerOptionsSchema.prefault({}),
   "respan-ai": providerOptionsSchema.prefault({}),
+  localFallback: localFallbackSchema.optional(),
 });
 const partialProviderSchema = z.strictObject({
   selected: z.enum(["jev_compatible", "respan-ai"]).optional(),
   jev_compatible: providerOptionsSchema.optional(),
   "respan-ai": providerOptionsSchema.optional(),
+  localFallback: localFallbackSchema.optional(),
 });
 const configSchema = z.strictObject({
   enabled: z.boolean().default(true),
   autoUpdate: z.boolean().default(false),
   mode: z.enum(["off", "shadow", "advise", "act"]).default("off"),
   experimentalCodeSearch: z.boolean().default(false),
+  experimentalCua: z.boolean().optional(),
   provider: providerSchema.prefault({}),
   models: z.array(z.string().min(1)).max(16).default([]),
   activatableTools: z.array(z.string().min(1)).max(254).default([]),
@@ -138,6 +147,7 @@ async function readConfig(path: string, migrateDefaults = false): Promise<Config
     autoUpdate: z.boolean().optional(),
     mode: z.enum(["off", "shadow", "advise", "act"]).optional(),
     experimentalCodeSearch: z.boolean().optional(),
+    experimentalCua: z.boolean().optional(),
     provider: partialProviderSchema.optional(),
     model: z.string().min(1).optional(),
     endpoint: z.url().optional(),

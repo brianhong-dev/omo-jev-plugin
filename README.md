@@ -52,6 +52,10 @@ The simplest configuration is:
 
 ### Decision provider
 
+To use TypeSafe first and switch to a local Jev-compatible server when account credits or quota are exhausted, configure `provider.localFallback` with `endpoint`, `model`, optional `apiKey`, and `timeoutMs` (default 10000). Keep the TypeSafe key under `provider.jev_compatible` and select `jev_compatible`.
+
+HTTP 402 or an explicit quota/credit exhaustion response with HTTP 403/429 retries the failed request locally. Later requests remain local for the rest of that session; a new session starts with TypeSafe again. Ordinary rate limits, authentication errors, and server failures do not trigger this switch. The local key defaults to `local` when omitted. This option applies only to `jev_compatible`.
+
 `provider.selected` is `jev_compatible` (the default) or `respan-ai`. Each provider has its own `model`, `apiKey`, and `endpoint`. When the model ID is omitted, the defaults are `jev-1.13.0` and `respan/span-01-lite`, respectively. To use Respan:
 
 ```jsonc
@@ -86,6 +90,12 @@ In `shadow` mode, a `Jev shadow` history card records whether a tool was recomme
 Estimated cost uses the API response's `usage.cost` when present. Otherwise it uses the public [TypeSafe Jev 1.13 price](https://docs.typesafe.ai/models) of $0.042 per million input tokens, the [Span-01 price](https://openrouter.ai/respan/span-01) of $0.02 per million input tokens, or the free Span-01 Lite price (output is free). Unknown models show `unavailable`. Failed API requests provide no usage data and cannot be counted.
 
 ### Decision scope
+
+### Jev CUA loop
+
+Opt in with `"experimentalCua": true` and reload the extension. In `advise` or `act`, `jev_cua_step` observes a target, asks Jev to choose one supplied grounded action, dispatches it through the host permission pipeline, observes again, and assesses the expected result. It uses two decision calls and shares the normal provider, quota fallback, and call budget. No action is taken when no candidate passes the fit/confidence gates or observation fails. `shadow` and `off` do not execute this loop.
+
+Read the computer-use or cua-driver skill first. Supply only user-authorized action candidates and treat UI content as untrusted data. Bind fresh snapshot tokens using parameter strings such as `$observation.elements.14.element_token`. The `jev_cua_observe` and `jev_cua_action` adapters support exact cua-driver windows, background AX clicks and value writes via the host `bash` permissions. Pixel input, Blender, and game controls are not included. Observation text is bounded; vision grounding remains the agent's responsibility. `verified` is a model assessment of the expected result, not proof that the whole user request is complete.
 
 Enable only the decisions you need. `skills`, `nextAction`, `toolDiscovery`, `resultAssessment`, `loopDetection`, and `completion` default to `true`; the others default to `false`.
 

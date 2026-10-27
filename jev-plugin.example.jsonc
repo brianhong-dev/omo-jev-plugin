@@ -6,6 +6,8 @@
   "autoUpdate": false,
   // Experimental, opt-in source retrieval for trusted Git projects.
   "experimentalCodeSearch": false,
+  // Observe, choose one grounded action, execute through host permissions, then assess.
+  "experimentalCua": false,
   "mode": "advise",
   "provider": {
     "selected": "jev_compatible",
